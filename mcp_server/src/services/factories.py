@@ -108,6 +108,7 @@ except ImportError:
     HAS_GEMINI_RERANKER = False
 
 
+
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
 
@@ -368,7 +369,6 @@ class EmbedderFactory:
                 if not base_url.endswith('openai/v1/'):
                     base_url += 'openai/v1/'
 
-<<<<<<< HEAD
                 if azure_config.use_azure_ad:
                     logger.info('Creating Azure OpenAI Embedder client with Azure AD authentication')
                     token_provider = create_azure_credential_token_provider()
@@ -383,12 +383,6 @@ class EmbedderFactory:
                         base_url=base_url,
                         api_key=api_key,
                     )
-=======
-                azure_client = AsyncOpenAI(
-                    base_url=base_url,
-                    api_key=api_key,
-                )
->>>>>>> 4af2c700 (feat(mcp): add generic OpenAI embedder and revert Azure-specific logic)
 
                 return AzureOpenAIEmbedderClient(
                     azure_client=azure_client,
