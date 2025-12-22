@@ -110,6 +110,7 @@ except ImportError:
     HAS_GEMINI_RERANKER = False
 
 
+
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
 
