@@ -583,6 +583,7 @@ async def resolve_extracted_edge(
             )
             extracted_edge.attributes = edge_attributes_response
 
+
         return extracted_edge, [], []
 
     # Fast path: if the fact text and endpoints already exist verbatim, reuse the matching edge.
