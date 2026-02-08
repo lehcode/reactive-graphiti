@@ -495,7 +495,7 @@ async def resolve_extracted_edges(
         create_entity_edge_embeddings(embedder, invalidated_edges),
     )
 
-    return resolved_edges, invalidated_edges, new_edges
+    return resolved_edges, invalidated_edges
 
 
 def resolve_edge_contradictions(
