@@ -136,37 +136,121 @@ async def extract_edges(
         'custom_extraction_instructions': custom_extraction_instructions or '',
     }
 
-    llm_response = await llm_client.generate_response(
-        prompt_library.extract_edges.edge(context),
-        response_model=ExtractedEdges,
-        max_tokens=extract_edges_max_tokens,
-        group_id=group_id,
-        prompt_name='extract_edges.edge',
+    # Zep: Dynamic node chunking for large graphs
+    # We use a covering set of chunks to ensure all possible pairs are evaluated
+    # at least once while keeping chunk sizes manageable for LLM context.
+    chunk_size = 10
+    covering_chunks = []
+    
+    # Simple strategy: chunk nodes and evaluate pairs within chunks.
+    # For a small number of nodes, this is just one chunk.
+    if len(nodes) <= chunk_size:
+        covering_chunks = [(nodes, list(range(len(nodes))))]
+    else:
+        # For larger node sets, we use a simple sliding window of chunks
+        # to ensure good coverage of potential relations.
+        # This can be improved with more sophisticated graph-aware chunking.
+        for i in range(0, len(nodes), chunk_size // 2):
+            chunk = nodes[i : i + chunk_size]
+            indices = list(range(i, min(i + chunk_size, len(nodes))))
+            covering_chunks.append((chunk, indices))
+            if i + chunk_size >= len(nodes):
+                break
+
+    processed_pairs: set[frozenset[int]] = set()
+    chunk_assigned_pairs: list[set[frozenset[int]]] = []
+
+    for _, global_indices in covering_chunks:
+        assigned_pairs: set[frozenset[int]] = set()
+        for i, idx_i in enumerate(global_indices):
+            for idx_j in global_indices[i + 1 :]:
+                pair = frozenset([idx_i, idx_j])
+                if pair not in processed_pairs:
+                    processed_pairs.add(pair)
+                    assigned_pairs.add(pair)
+        chunk_assigned_pairs.append(assigned_pairs)
+
+    async def extract_edges_for_chunk(
+        chunk: list[EntityNode],
+        global_indices: list[int],
+        assigned_pairs: set[frozenset[int]],
+    ) -> list[ExtractedEdge]:
+        # Skip chunks with no assigned pairs (all pairs already processed)
+        if not assigned_pairs:
+            return []
+
+        # Build name-to-local-index mapping for this chunk
+        chunk_name_to_idx: dict[str, int] = {node.name: idx for idx, node in enumerate(chunk)}
+
+        # Prepare context for LLM
+        context = {
+            'episode_content': episode.content,
+            'nodes': [{'name': node.name, 'entity_types': node.labels} for node in chunk],
+            'previous_episodes': [ep.content for ep in previous_episodes],
+            'reference_time': episode.valid_at,
+            'edge_types': edge_types_context,
+            'custom_extraction_instructions': custom_extraction_instructions or '',
+        }
+
+        llm_response = await llm_client.generate_response(
+            prompt_library.extract_edges.edge(context),
+            response_model=ExtractedEdges,
+            max_tokens=extract_edges_max_tokens,
+            group_id=group_id,
+            prompt_name='extract_edges.edge',
+        )
+        chunk_edges_data = ExtractedEdges(**llm_response).edges
+
+        # Validate entity names and filter to assigned pairs
+        valid_edges: list[ExtractedEdge] = []
+
+        for edge_data in chunk_edges_data:
+            source_name = edge_data.source_entity_name
+            target_name = edge_data.target_entity_name
+
+            # Validate LLM-returned names exist in the chunk
+            if source_name not in chunk_name_to_idx:
+                logger.warning(
+                    f'Source entity name "{source_name}" not found in chunk '
+                    f'for edge {edge_data.relation_type}'
+                )
+                continue
+
+            if target_name not in chunk_name_to_idx:
+                logger.warning(
+                    f'Target entity name "{target_name}" not found in chunk '
+                    f'for edge {edge_data.relation_type}'
+                )
+                continue
+
+            # Map to global indices for pair tracking
+            source_local_idx = chunk_name_to_idx[source_name]
+            target_local_idx = chunk_name_to_idx[target_name]
+            mapped_source = global_indices[source_local_idx]
+            mapped_target = global_indices[target_local_idx]
+
+            # Only include edges for pairs assigned to this chunk
+            edge_pair = frozenset([mapped_source, mapped_target])
+            if edge_pair in assigned_pairs:
+                valid_edges.append(edge_data)
+
+        return valid_edges
+
+    # Extract edges from all chunks in parallel
+    chunk_results: list[list[ExtractedEdge]] = list(
+        await semaphore_gather(
+            *[
+                extract_edges_for_chunk(chunk, global_indices, assigned_pairs)
+                for (chunk, global_indices), assigned_pairs in zip(
+                    covering_chunks, chunk_assigned_pairs, strict=True
+                )
+            ]
+        )
     )
-    all_edges_data = ExtractedEdges(**llm_response).edges
 
-    # Validate entity names
-    edges_data: list[ExtractedEdge] = []
-    for edge_data in all_edges_data:
-        source_name = edge_data.source_entity_name
-        target_name = edge_data.target_entity_name
+    # Flatten results
+    edges_data: list[ExtractedEdge] = [edge for chunk_result in chunk_results for edge in chunk_result]
 
-        # Validate LLM-returned names exist in the nodes list
-        if source_name not in name_to_node:
-            logger.warning(
-                'Source entity not found in nodes for edge relation: %s',
-                edge_data.relation_type,
-            )
-            continue
-
-        if target_name not in name_to_node:
-            logger.warning(
-                'Target entity not found in nodes for edge relation: %s',
-                edge_data.relation_type,
-            )
-            continue
-
-        edges_data.append(edge_data)
 
     end = time()
     logger.debug(f'Extracted {len(edges_data)} new edges in {(end - start) * 1000:.0f} ms')
