@@ -125,10 +125,13 @@ class QueueService:
         if self._graphiti_client is None:
             raise RuntimeError('Queue service not initialized. Call initialize() first.')
 
+        # Use an effective ID for logging if uuid is None
+        log_id = uuid if uuid is not None else f"new-{datetime.now(timezone.utc).strftime('%H%M%S')}"
+
         async def process_episode():
             """Process the episode using the graphiti client."""
             try:
-                logger.info(f"Processing episode '{name}' ({uuid}) for group {group_id}")
+                logger.info(f"Processing episode '{name}' ({log_id}) for group {group_id}")
 
                 # Process the episode using the graphiti client
                 await self._graphiti_client.add_episode(
@@ -143,12 +146,12 @@ class QueueService:
                 )
 
                 logger.info(
-                    f"Successfully processed episode '{name}' ({uuid}) for group {group_id}"
+                    f"Successfully processed episode '{name}' ({log_id}) for group {group_id}"
                 )
 
             except Exception as e:
                 logger.error(
-                    f"Failed to process episode '{name}' ({uuid}) for group {group_id}: {str(e)}"
+                    f"Failed to process episode '{name}' ({log_id}) for group {group_id}: {str(e)}"
                 )
                 raise
 
