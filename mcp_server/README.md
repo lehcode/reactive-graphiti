@@ -68,6 +68,7 @@ docker compose up
 This starts both FalkorDB and the MCP server in a single container.
 
 **Alternative**: Run with separate containers using Neo4j:
+
 ```bash
 docker compose -f docker/docker-compose-neo4j.yml up
 ```
@@ -176,6 +177,7 @@ database:
 The `openai_generic` provider supports any OpenAI-compatible API, including LiteLLM proxy, Ollama, and vLLM. It uses the standard `/chat/completions` endpoint with automatic fallback for providers that don't support `json_schema` response format.
 
 **LiteLLM Proxy Example:**
+
 ```yaml
 llm:
   provider: "openai_generic"
@@ -187,6 +189,7 @@ llm:
 ```
 
 **Ollama Example:**
+
 ```yaml
 llm:
   provider: "openai_generic"
@@ -382,6 +385,7 @@ Graphiti's ingestion pipelines are designed for high concurrency, controlled by 
 - Track token usage and costs
 
 Set this in your `.env` file:
+
 ```bash
 SEMAPHORE_LIMIT=10  # Adjust based on your LLM provider tier
 ```
@@ -397,12 +401,14 @@ A pre-built Graphiti MCP container is available at: `zepai/knowledge-graph-mcp`
 Before running Docker Compose, configure your API keys using a `.env` file (recommended):
 
 1. **Create a .env file in the mcp_server directory**:
+
    ```bash
    cd graphiti/mcp_server
    cp .env.example .env
    ```
 
 2. **Edit the .env file** to set your API keys:
+
    ```bash
    # Required - at least one LLM provider API key
    OPENAI_API_KEY=your_openai_api_key_here
@@ -624,7 +630,7 @@ capabilities.
 
 The Graphiti MCP Server uses HTTP transport (at endpoint `/mcp/`). Claude Desktop does not natively support HTTP transport, so you'll need to use a gateway like `mcp-remote`.
 
-1.  **Run the Graphiti MCP server**:
+1. **Run the Graphiti MCP server**:
 
     ```bash
     docker compose up
@@ -632,14 +638,14 @@ The Graphiti MCP Server uses HTTP transport (at endpoint `/mcp/`). Claude Deskto
     uv run main.py
     ```
 
-2.  **(Optional) Install `mcp-remote` globally**:
+2. **(Optional) Install `mcp-remote` globally**:
     If you prefer to have `mcp-remote` installed globally, or if you encounter issues with `npx` fetching the package, you can install it globally. Otherwise, `npx` (used in the next step) will handle it for you.
 
     ```bash
     npm install -g mcp-remote
     ```
 
-3.  **Configure Claude Desktop**:
+3. **Configure Claude Desktop**:
     Open your Claude Desktop configuration file (usually `claude_desktop_config.json`) and add or modify the `mcpServers` section as follows:
 
     ```json
@@ -659,7 +665,7 @@ The Graphiti MCP Server uses HTTP transport (at endpoint `/mcp/`). Claude Deskto
 
     If you already have an `mcpServers` entry, add `graphiti-memory` (or your chosen name) as a new key within it.
 
-4.  **Restart Claude Desktop** for the changes to take effect.
+4. **Restart Claude Desktop** for the changes to take effect.
 
 ## Requirements
 
