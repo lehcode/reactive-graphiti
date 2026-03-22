@@ -111,7 +111,7 @@ def get_entity_edge_save_query(provider: GraphProvider, has_aoss: bool = False) 
                         MATCH (source:Entity {uuid: $edge_data.source_uuid})
                         MATCH (target:Entity {uuid: $edge_data.target_uuid})
                         MERGE (source)-[e:RELATES_TO {uuid: $edge_data.uuid}]->(target)
-                        SET e = $edge_data
+                        SET e += $edge_data
                         """
                     + save_embedding_query
                 )
@@ -175,7 +175,7 @@ def get_entity_edge_save_bulk_query(provider: GraphProvider, has_aoss: bool = Fa
                     MATCH (source:Entity {uuid: edge.source_node_uuid})
                     MATCH (target:Entity {uuid: edge.target_node_uuid})
                     MERGE (source)-[e:RELATES_TO {uuid: edge.uuid}]->(target)
-                    SET e = edge
+                    SET e += edge
                     """
                 + save_embedding_query
                 + """
@@ -229,7 +229,7 @@ def get_community_edge_save_query(provider: GraphProvider) -> str:
                 MATCH (community:Community {uuid: $community_uuid})
                 MATCH (node {uuid: $entity_uuid})
                 MERGE (community)-[e:HAS_MEMBER {uuid: $uuid}]->(node)
-                SET e = {uuid: $uuid, group_id: $group_id, created_at: $created_at}
+                SET e += {uuid: $uuid, group_id: $group_id, created_at: $created_at}
                 RETURN e.uuid AS uuid
             """
         case GraphProvider.NEPTUNE:
@@ -266,7 +266,7 @@ def get_community_edge_save_query(provider: GraphProvider) -> str:
                 MATCH (community:Community {uuid: $community_uuid})
                 MATCH (node:Entity | Community {uuid: $entity_uuid})
                 MERGE (community)-[e:HAS_MEMBER {uuid: $uuid}]->(node)
-                SET e = {uuid: $uuid, group_id: $group_id, created_at: $created_at}
+                SET e += {uuid: $uuid, group_id: $group_id, created_at: $created_at}
                 RETURN e.uuid AS uuid
             """
 

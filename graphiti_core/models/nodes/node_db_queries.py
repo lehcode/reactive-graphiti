@@ -95,15 +95,16 @@ def get_episode_node_save_bulk_query(provider: GraphProvider) -> str:
             return """
                 UNWIND $episodes AS episode
                 MERGE (n:Episodic {uuid: episode.uuid})
-                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content, 
+                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content,
                 entity_edges: episode.entity_edges, created_at: episode.created_at, valid_at: episode.valid_at}
                 RETURN n.uuid AS uuid
             """
         case _:  # Neo4j
+            # Patched: Using SET n += to prevent overwriting existing properties
             return """
                 UNWIND $episodes AS episode
                 MERGE (n:Episodic {uuid: episode.uuid})
-                SET n = {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content, 
+                SET n += {uuid: episode.uuid, name: episode.name, group_id: episode.group_id, source_description: episode.source_description, source: episode.source, content: episode.content,
                 entity_edges: episode.entity_edges, created_at: episode.created_at, valid_at: episode.valid_at}
                 RETURN n.uuid AS uuid
             """
@@ -178,11 +179,12 @@ def get_entity_node_save_query(provider: GraphProvider, labels: str, has_aoss: b
                 if not has_aoss
                 else ''
             )
+            # Patched: Using SET n += to prevent overwriting existing properties
             return (
                 f"""
                 MERGE (n:Entity {{uuid: $entity_data.uuid}})
                 SET n:{labels}
-                SET n = $entity_data
+                SET n += $entity_data
                 """
                 + save_embedding_query
                 + """
@@ -253,12 +255,12 @@ def get_entity_node_save_bulk_query(
                 if not has_aoss
                 else ''
             )
+            # Patched: Removed invalid SET n:$(node.labels) syntax AND use SET n += to prevent overwriting existing properties
             return (
                 """
                     UNWIND $nodes AS node
                     MERGE (n:Entity {uuid: node.uuid})
-                    SET n:$(node.labels)
-                    SET n = node
+                    SET n += node
                     """
                 + save_embedding_query
                 + """
@@ -318,9 +320,10 @@ def get_community_node_save_query(provider: GraphProvider) -> str:
                 RETURN n.uuid AS uuid
             """
         case _:  # Neo4j
+            # Patched: Using SET n += to prevent overwriting existing properties
             return """
                 MERGE (n:Community {uuid: $uuid})
-                SET n = {uuid: $uuid, name: $name, group_id: $group_id, summary: $summary, created_at: $created_at}
+                SET n += {uuid: $uuid, name: $name, group_id: $group_id, summary: $summary, created_at: $created_at}
                 WITH n CALL db.create.setNodeVectorProperty(n, "name_embedding", $name_embedding)
                 RETURN n.uuid AS uuid
             """
@@ -357,9 +360,10 @@ def get_saga_node_save_query(provider: GraphProvider) -> str:
                 RETURN n.uuid AS uuid
             """
         case _:  # Neo4j, FalkorDB, Neptune
+            # Patched: Using SET n += to prevent overwriting existing properties
             return """
                 MERGE (n:Saga {uuid: $uuid})
-                SET n = {uuid: $uuid, name: $name, group_id: $group_id, created_at: $created_at}
+                SET n += {uuid: $uuid, name: $name, group_id: $group_id, created_at: $created_at}
                 RETURN n.uuid AS uuid
             """
 
