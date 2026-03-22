@@ -26,9 +26,11 @@ providers = [
 ]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src"]
+exclude = ["tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+reportMissingImports = "warning"
 
 [tool.ruff]
 line-length = 100

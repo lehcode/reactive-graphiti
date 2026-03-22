@@ -239,7 +239,7 @@ class GeminiClient(LLMClient):
         response_model: type[BaseModel] | None = None,
         max_tokens: int | None = None,
         model_size: ModelSize = ModelSize.medium,
-    ) -> tuple[dict[str, typing.Any], int, int]:
+    ) -> dict[str, typing.Any]:
         """
         Generate a response from the Gemini language model.
 
@@ -250,7 +250,7 @@ class GeminiClient(LLMClient):
             model_size (ModelSize): The size of the model to use (small or medium).
 
         Returns:
-            tuple[dict[str, typing.Any], int, int]: The response dict, input tokens, and output tokens.
+            dict[str, typing.Any]: The response from the language model.
 
         Raises:
             RateLimitError: If the API rate limit is exceeded.
@@ -306,13 +306,6 @@ class GeminiClient(LLMClient):
                 config=generation_config,
             )
 
-            # Extract token usage from the response
-            input_tokens = 0
-            output_tokens = 0
-            if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                input_tokens = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
-                output_tokens = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
-
             # Always capture the raw output for debugging
             raw_output = getattr(response, 'text', None)
 
@@ -329,7 +322,7 @@ class GeminiClient(LLMClient):
                     validated_model = response_model.model_validate(json.loads(raw_output))
 
                     # Return as a dictionary for API consistency
-                    return validated_model.model_dump(), input_tokens, output_tokens
+                    return validated_model.model_dump()
                 except Exception as e:
                     if raw_output:
                         logger.error(
@@ -340,11 +333,11 @@ class GeminiClient(LLMClient):
                         salvaged = self.salvage_json(raw_output)
                         if salvaged is not None:
                             logger.warning('Salvaged partial JSON from truncated/malformed output.')
-                            return salvaged, input_tokens, output_tokens
+                            return salvaged
                     raise Exception(f'Failed to parse structured response: {e}') from e
 
             # Otherwise, return the response text as a dictionary
-            return {'content': raw_output}, input_tokens, output_tokens
+            return {'content': raw_output}
 
         except Exception as e:
             # Check if it's a rate limit error based on Gemini API error codes
@@ -401,23 +394,15 @@ class GeminiClient(LLMClient):
             retry_count = 0
             last_error = None
             last_output = None
-            total_input_tokens = 0
-            total_output_tokens = 0
 
             while retry_count < self.MAX_RETRIES:
                 try:
-                    response, input_tokens, output_tokens = await self._generate_response(
+                    response = await self._generate_response(
                         messages=messages,
                         response_model=response_model,
                         max_tokens=max_tokens,
                         model_size=model_size,
                     )
-                    total_input_tokens += input_tokens
-                    total_output_tokens += output_tokens
-
-                    # Record token usage
-                    self.token_tracker.record(prompt_name, total_input_tokens, total_output_tokens)
-
                     last_output = (
                         response.get('content')
                         if isinstance(response, dict) and 'content' in response

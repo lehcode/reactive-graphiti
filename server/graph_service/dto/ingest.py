@@ -6,6 +6,10 @@ from graph_service.dto.common import Message
 class AddMessagesRequest(BaseModel):
     group_id: str = Field(..., description='The group id of the messages to add')
     messages: list[Message] = Field(..., description='The messages to add')
+    llm_tier: str | None = Field(default=None, description='The LLM tier to use (optional)')
+    simulate_slack: bool | None = Field(
+        default=None, description='Whether to simulate slack (optional)'
+    )
 
 
 class AddEntityNodeRequest(BaseModel):

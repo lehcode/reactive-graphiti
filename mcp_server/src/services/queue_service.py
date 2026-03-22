@@ -126,7 +126,9 @@ class QueueService:
             raise RuntimeError('Queue service not initialized. Call initialize() first.')
 
         # Use an effective ID for logging if uuid is None
-        log_id = uuid if uuid is not None else f"new-{datetime.now(timezone.utc).strftime('%H%M%S')}"
+        log_id = (
+            uuid if uuid is not None else f'new-{datetime.now(timezone.utc).strftime("%H%M%S")}'
+        )
 
         async def process_episode():
             """Process the episode using the graphiti client."""

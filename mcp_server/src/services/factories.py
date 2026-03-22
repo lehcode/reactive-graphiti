@@ -110,7 +110,6 @@ except ImportError:
 
 from utils.utils import create_azure_credential_token_provider
 
-
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
 
@@ -433,6 +432,27 @@ class EmbedderFactory:
                     embedding_dim=config.dimensions or 1024,
                 )
                 return VoyageAIEmbedder(config=voyage_config)
+
+            case 'openai_generic':
+                # OpenAI-compatible embedder (LiteLLM, Ollama, vLLM, etc.)
+                # Uses the same OpenAIEmbedder with custom base_url
+                if not config.providers.openai:
+                    raise ValueError(
+                        'OpenAI provider configuration not found for openai_generic embedder'
+                    )
+
+                api_key = config.providers.openai.api_key
+                _validate_api_key('OpenAI Generic Embedder', api_key, logger)
+
+                from graphiti_core.embedder.openai import OpenAIEmbedderConfig
+
+                embedder_config = OpenAIEmbedderConfig(
+                    api_key=api_key,
+                    embedding_model=config.model,
+                    base_url=config.providers.openai.api_url,
+                    embedding_dim=config.dimensions,
+                )
+                return OpenAIEmbedder(config=embedder_config)
 
             case _:
                 raise ValueError(f'Unsupported Embedder provider: {provider}')

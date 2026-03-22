@@ -1,0 +1,8 @@
+[allowlist]
+description = "Public Posthog API Key and patterns"
+regexes = [
+    'phc_UG6EcfDbuXz92neb3rMlQFDY0csxgMqRcIPWESqnSmo'
+]
+paths = [
+    '.github/secret_scanning.yml'
+]
