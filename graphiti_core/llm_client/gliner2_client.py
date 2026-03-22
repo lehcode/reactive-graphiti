@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -148,9 +149,7 @@ class GLiNER2Client(LLMClient):
         """
         user_content = messages[-1].content if len(messages) > 1 else messages[0].content
 
-        match = re.search(
-            r'<ENTITY TYPES>\s*(.*?)\s*</ENTITY TYPES>', user_content, re.DOTALL
-        )
+        match = re.search(r'<ENTITY TYPES>\s*(.*?)\s*</ENTITY TYPES>', user_content, re.DOTALL)
         if match:
             try:
                 raw = match.group(1)
@@ -205,10 +204,12 @@ class GLiNER2Client(LLMClient):
                 name = item.get('text', '') if isinstance(item, dict) else str(item)
 
                 if name:
-                    extracted_entities.append({
-                        'name': name,
-                        'entity_type_id': entity_type_id,
-                    })
+                    extracted_entities.append(
+                        {
+                            'name': name,
+                            'entity_type_id': entity_type_id,
+                        }
+                    )
 
         return {'extracted_entities': extracted_entities}
 

@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +16,7 @@ limitations under the License.
 """
 
 summary_instructions = """Guidelines:
-        1. Output only factual content. Never explain what you're doing, why, or mention limitations/constraints. 
+        1. Output only factual content. Never explain what you're doing, why, or mention limitations/constraints.
         2. Only use the provided messages, entity, and entity context to set attribute values.
         3. Keep the summary concise and to the point. STATE FACTS DIRECTLY IN UNDER 250 CHARACTERS.
 

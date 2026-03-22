@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -234,8 +235,8 @@ async def edge_fulltext_search(
                 """
                                 UNWIND $ids as id
                                 MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity)
-                                WHERE e.group_id IN $group_ids 
-                                AND id(e)=id 
+                                WHERE e.group_id IN $group_ids
+                                AND id(e)=id
                                 """
                 + filter_query
                 + """
@@ -734,7 +735,7 @@ async def node_similarity_search(
                                                                                                                                                                 UNWIND $ids as i
                                                                                                                                                                 MATCH (n:Entity)
                                                                                                                                                                 WHERE id(n)=i.id
-                                                                                                                                                                RETURN 
+                                                                                                                                                                RETURN
                                                                                                                                                                 """
                 + get_entity_node_return_query(driver.provider)
                 + """

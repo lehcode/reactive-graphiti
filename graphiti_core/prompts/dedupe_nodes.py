@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -75,10 +76,10 @@ def node(context: dict[str, Any]) -> list[Message]:
         <EXISTING ENTITIES>
         {to_prompt_json(context['existing_nodes'])}
         </EXISTING ENTITIES>
-        
+
         Given the above EXISTING ENTITIES and their attributes, MESSAGE, and PREVIOUS MESSAGES; Determine if the NEW ENTITY extracted from the conversation
         is a duplicate entity of one of the EXISTING ENTITIES.
-        
+
         Entities should only be considered duplicates if they refer to the *same real-world object or concept*.
         Semantic Equivalence: if a descriptive label in existing_entities clearly refers to a named entity in context, treat them as duplicates.
 

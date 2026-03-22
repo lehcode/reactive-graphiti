@@ -1,5 +1,6 @@
 """
 Copyright 2025, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -210,8 +211,8 @@ async def main():
                 'content': (
                     'Kamala Harris a été procureure générale de Californie de 2011 à 2017. '
                     'Avant cela, elle a occupé le poste de procureure du district de '
-                    'San Francisco. Elle est diplômée de l\'Université Howard et a obtenu '
-                    'son diplôme de droit au Hastings College of the Law de l\'Université de '
+                    "San Francisco. Elle est diplômée de l'Université Howard et a obtenu "
+                    "son diplôme de droit au Hastings College of the Law de l'Université de "
                     'Californie. En tant que procureure générale, elle a négocié un accord '
                     'national de 25 milliards de dollars avec les grandes banques américaines.'
                 ),

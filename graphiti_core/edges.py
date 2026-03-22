@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -288,7 +289,9 @@ class EntityEdge(Edge):
         self.fact_embedding = await embedder.create(input_data=[text])
 
         end = time()
-        logger.debug(f'embedded edge {self.uuid} fact ({len(text)} chars) in {(end - start) * 1000} ms')
+        logger.debug(
+            f'embedded edge {self.uuid} fact ({len(text)} chars) in {(end - start) * 1000} ms'
+        )
 
         return self.fact_embedding
 

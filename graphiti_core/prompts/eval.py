@@ -1,5 +1,6 @@
 """
 Copyright 2024, Zep Software, Inc.
+Copyright 2025-2026, Anton Repin <robot@pimeleon.org>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -106,7 +107,7 @@ def eval_prompt(context: dict[str, Any]) -> list[Message]:
 
     user_prompt = f"""
     Given the QUESTION and the gold standard ANSWER determine if the RESPONSE to the question is correct or incorrect.
-    Although the RESPONSE may be more verbose, mark it as correct as long as it references the same topic 
+    Although the RESPONSE may be more verbose, mark it as correct as long as it references the same topic
     as the gold standard ANSWER. Also include your reasoning for the grade.
     <QUESTION>
     {context['query']}
@@ -129,23 +130,23 @@ def eval_add_episode_results(context: dict[str, Any]) -> list[Message]:
         than a candidate graph building result based on the same messages."""
 
     user_prompt = f"""
-    Given the following PREVIOUS MESSAGES and MESSAGE, determine if the BASELINE graph data extracted from the 
+    Given the following PREVIOUS MESSAGES and MESSAGE, determine if the BASELINE graph data extracted from the
     conversation is higher quality than the CANDIDATE graph data extracted from the conversation.
-    
+
     Return False if the BASELINE extraction is better, and True otherwise. If the CANDIDATE extraction and
     BASELINE extraction are nearly identical in quality, return True. Add your reasoning for your decision to the reasoning field
-    
+
     <PREVIOUS MESSAGES>
     {context['previous_messages']}
     </PREVIOUS MESSAGES>
     <MESSAGE>
     {context['message']}
     </MESSAGE>
-    
+
     <BASELINE>
     {context['baseline']}
     </BASELINE>
-    
+
     <CANDIDATE>
     {context['candidate']}
     </CANDIDATE>
