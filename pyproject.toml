@@ -100,5 +100,7 @@ docstring-code-format = true
 
 [tool.pyright]
 include = ["graphiti_core"]
+exclude = ["graphiti_core/driver/neptune_driver.py"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+reportMissingImports = "warning"

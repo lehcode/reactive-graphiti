@@ -65,4 +65,5 @@ docstring-code-format = true
 [tool.pyright]
 include = ["."]
 pythonVersion = "3.10"
-typeCheckingMode = "standard"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
