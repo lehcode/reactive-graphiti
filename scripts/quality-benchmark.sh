@@ -47,7 +47,7 @@ fi
 
 # 2. Ruff (Linting & Formatting)
 echo -e "\n${BLUE}[2/3] Running Ruff Check...${NC}"
-RUFF_OUTPUT=$(ruff check $PYTHON_DIRS 2>&1 || true)
+RUFF_OUTPUT=$(ruff check --fix $PYTHON_DIRS 2>&1 || true)
 # Extract number from "Found X errors."
 RUFF_ERRORS=$(echo "$RUFF_OUTPUT" | grep -o "Found [0-9]* error" | head -n 1 | awk '{print $2}' || echo 0)
 if [ -z "$RUFF_ERRORS" ]; then RUFF_ERRORS=0; fi

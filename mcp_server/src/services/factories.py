@@ -15,6 +15,7 @@ from config.schema import (
     EmbedderConfig,
     LLMConfig,
 )
+from utils.utils import create_azure_credential_token_provider
 
 # Try to import FalkorDriver if available
 try:
@@ -108,7 +109,6 @@ try:
 except ImportError:
     HAS_GEMINI_RERANKER = False
 
-from utils.utils import create_azure_credential_token_provider
 
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
