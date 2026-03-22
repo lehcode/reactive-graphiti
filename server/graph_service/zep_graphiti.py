@@ -19,8 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class ZepGraphiti(Graphiti):
-    def __init__(self, uri: str, user: str, password: str, llm_client: LLMClient | None = None):
-        super().__init__(uri, user, password, llm_client)
+    def __init__(
+        self, uri: str, user: str, password: str, llm_client: LLMClient | None = None, embedder=None
+    ):
+        super().__init__(uri, user, password, llm_client, embedder=embedder)
 
     async def save_entity_node(self, name: str, uuid: str, group_id: str, summary: str = ''):
         new_node = EntityNode(
@@ -107,16 +109,14 @@ def create_configured_client(settings: Settings, llm_tier: str | None = None) ->
     )
     llm_client = OpenAIGenericClient(config=llm_config)
 
-    # 3. Create the Graphiti client with our custom LLM
+    # 3. Create the Graphiti client with our custom LLM and embedder
     client = ZepGraphiti(
         uri=settings.neo4j_uri,
         user=settings.neo4j_user,
         password=settings.neo4j_password,
         llm_client=llm_client,
+        embedder=embedder,
     )
-
-    # 4. Swap the default embedder
-    client.embedder = embedder
 
     logger.info(f'Configured ZepGraphiti with LLM: {llm_config.model} at {llm_config.base_url}')
     return client

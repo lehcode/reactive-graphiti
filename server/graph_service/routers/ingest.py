@@ -154,9 +154,7 @@ async def add_messages_task(request: AddMessagesRequest, settings: any):
                 )
 
                 reference_time = (
-                    message.timestamp.isoformat()
-                    if message.timestamp
-                    else datetime.now(timezone.utc).isoformat()
+                    message.timestamp if message.timestamp else datetime.now(timezone.utc)
                 )
 
                 await g.add_episode(
