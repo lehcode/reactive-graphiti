@@ -1,0 +1,72 @@
+fail_fast: true
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.9
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+        exclude: '\.md$'
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        args: ['-e', 'SC1091,SC2155,SC2086']
+        stages: [pre-commit, pre-push]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ['-d', '{rules: {line-length: {max: 160}}}']
+        stages: [pre-commit, pre-push]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.44.0
+    hooks:
+      - id: markdownlint
+        args: ["--config", ".markdownlint.yaml", "--fix"]
+
+  - repo: local
+    hooks:
+      - id: quality-benchmark
+        name: Code Quality Benchmark
+        entry: ./scripts/quality-benchmark.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        verbose: true
+
+      - id: gitleaks-staged
+        name: Secret detection (Gitleaks) - Staged
+        entry: gitleaks protect --staged --verbose --redact --config .gitleaks.toml
+        language: system
+        stages: [pre-commit]
+
+      - id: gitleaks-push
+        name: Secret detection (Gitleaks) - Full Scan
+        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+
+      - id: bash-syntax
+        name: Bash syntax check
+        entry: bash -n
+        language: system
+        types: [shell]
+        stages: [pre-commit, pre-push]
