@@ -855,6 +855,11 @@ class CommunityNode(Node):
 
 
 class SagaNode(Node):
+    summary: str = ''
+    first_episode_uuid: str | None = None
+    last_episode_uuid: str | None = None
+    last_summarized_at: datetime | None = None
+
     async def save(self, driver: GraphDriver):
         if driver.graph_operations_interface:
             try:
@@ -868,6 +873,10 @@ class SagaNode(Node):
             name=self.name,
             group_id=self.group_id,
             created_at=self.created_at,
+            summary=self.summary,
+            first_episode_uuid=self.first_episode_uuid,
+            last_episode_uuid=self.last_episode_uuid,
+            last_summarized_at=self.last_summarized_at,
         )
 
         logger.debug(f'Saved Node to Graph: {self.uuid}')
@@ -1066,11 +1075,16 @@ def get_community_node_from_record(record: Any) -> CommunityNode:
 
 
 def get_saga_node_from_record(record: Any) -> SagaNode:
+    last_summarized_at = record.get('last_summarized_at')
     return SagaNode(
         uuid=record['uuid'],
         name=record['name'],
         group_id=record['group_id'],
         created_at=parse_db_date(record['created_at']),  # type: ignore
+        summary=record.get('summary', '') or '',
+        first_episode_uuid=record.get('first_episode_uuid'),
+        last_episode_uuid=record.get('last_episode_uuid'),
+        last_summarized_at=parse_db_date(last_summarized_at) if last_summarized_at else None,  # type: ignore
     )
 
 
