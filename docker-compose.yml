@@ -4,6 +4,8 @@ services:
       context: .
     ports:
       - "${GRAPH_PORT_HOST:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         [
@@ -43,14 +45,14 @@ services:
       interval: 5s
       timeout: 10s
       retries: 10
-      start_period: 3s
+      start_period: 30s
     ports:
       - "${NEO4J_HTTP_PORT_HOST:-7474}:7474" # HTTP
       - "${NEO4J_BOLT_PORT_HOST:-7687}:7687" # Bolt
     volumes:
       - neo4j_data:/data
     environment:
-      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      - NEO4J_AUTH=${NEO4J_USER:-}/${NEO4J_PASSWORD:-}
 
   rg-falkordb:
     image: falkordb/falkordb:latest
