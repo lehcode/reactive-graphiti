@@ -115,7 +115,6 @@ else
     echo -e "${GREEN}✔ Passed: All modules have high Maintainability Index.${NC}"
 fi
 
-
 # Summary Report
 echo -e "\n${BLUE}==================================================${NC}"
 echo -e "                SUMMARY REPORT                    "
