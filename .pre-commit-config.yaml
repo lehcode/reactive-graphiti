@@ -1,5 +1,36 @@
 fail_fast: true
 repos:
+  - repo: local
+    hooks:
+      - id: quality-benchmark
+        name: Code Quality Benchmark
+        entry: ./scripts/quality-benchmark.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        verbose: true
+
+      - id: gitleaks-staged
+        name: Secret detection (Gitleaks) - Staged
+        entry: gitleaks protect --staged --verbose --redact --config .gitleaks.toml
+        language: system
+        stages: [pre-commit]
+
+      - id: gitleaks-push
+        name: Secret detection (Gitleaks) - Full Scan
+        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+
+      - id: bash-syntax
+        name: Bash syntax check
+        entry: bash -n
+        language: system
+        types: [shell]
+        stages: [pre-commit, pre-push]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.9
     hooks:
@@ -39,35 +70,3 @@ repos:
     hooks:
       - id: markdownlint
         args: ["--config", ".markdownlint.yaml", "--fix"]
-
-  - repo: local
-    hooks:
-      - id: quality-benchmark
-        name: Code Quality Benchmark
-        entry: ./scripts/quality-benchmark.sh
-        language: script
-        stages: [pre-push]
-        pass_filenames: false
-        always_run: true
-        verbose: true
-
-      - id: gitleaks-staged
-        name: Secret detection (Gitleaks) - Staged
-        entry: gitleaks protect --staged --verbose --redact --config .gitleaks.toml
-        language: system
-        stages: [pre-commit]
-
-      - id: gitleaks-push
-        name: Secret detection (Gitleaks) - Full Scan
-        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
-        language: system
-        stages: [pre-push]
-        pass_filenames: false
-
-
-      - id: bash-syntax
-        name: Bash syntax check
-        entry: bash -n
-        language: system
-        types: [shell]
-        stages: [pre-commit, pre-push]
