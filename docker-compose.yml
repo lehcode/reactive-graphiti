@@ -4,6 +4,8 @@ services:
       context: .
     ports:
       - "${GRAPH_PORT_HOST:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         [
