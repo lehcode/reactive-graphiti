@@ -40,12 +40,6 @@ repos:
       - id: markdownlint
         args: ["--config", ".markdownlint.yaml", "--fix"]
 
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
-    hooks:
-      - id: gitleaks
-        stages: [pre-commit, pre-push]
-
   - repo: local
     hooks:
       - id: quality-benchmark
@@ -56,6 +50,20 @@ repos:
         pass_filenames: false
         always_run: true
         verbose: true
+
+      - id: gitleaks-staged
+        name: Secret detection (Gitleaks) - Staged
+        entry: gitleaks protect --staged --verbose --redact --config .gitleaks.toml
+        language: system
+        stages: [pre-commit]
+
+      - id: gitleaks-push
+        name: Secret detection (Gitleaks) - Full Scan
+        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+
 
       - id: bash-syntax
         name: Bash syntax check
