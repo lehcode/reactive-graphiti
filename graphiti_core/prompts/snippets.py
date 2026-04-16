@@ -14,13 +14,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-
 from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS
 
 summary_instructions = f"""Guidelines:
         1. Output only factual content. Never explain what you're doing, why, or mention limitations or constraints.
         2. Only use the provided messages, entity, and entity context to set attribute values.
         3. Keep the summary information-dense and entity-specific. STATE FACTS DIRECTLY IN UNDER {MAX_SUMMARY_CHARS} CHARACTERS.
+
         4. Preserve all materially relevant names, roles, places, dates, counts, and temporal qualifiers that are explicitly supported.
         5. Prefer compact factual sentences over vague thematic phrasing or meta-language.
         6. When the durable fact is the content of what was said, state the content directly instead of narrating that it was said.

@@ -77,15 +77,10 @@ class Versions(TypedDict):
 
 
 def extract_message(context: dict[str, Any]) -> list[Message]:
-<<<<<<< HEAD
     sys_prompt = (
         'You are an entity extraction specialist for conversational messages. '
         'NEVER extract abstract concepts, feelings, or generic words.'
     )
-=======
-    sys_prompt = """You are an AI assistant that extracts entity nodes from conversational messages.
-    Your primary task is to extract and classify the speaker and other significant entities mentioned in the conversation."""
->>>>>>> be6945d3 (chore: apply automated linting and whitespace formatting fixes)
 
     user_prompt = f"""
 NEVER extract any of the following:
@@ -128,15 +123,6 @@ reference entities. Only extract distinct entities from the CURRENT MESSAGE.
 {context['episode_content']}
 </CURRENT MESSAGE>
 
-<<<<<<< HEAD
-=======
-Instructions:
-
-You are given a conversation context and a CURRENT MESSAGE. Your task is to extract **entity nodes** mentioned **explicitly or implicitly** in the CURRENT MESSAGE.
-Pronoun references such as he/she/they or this/that/those should be disambiguated to the names of the
-reference entities. Only extract distinct entities from the CURRENT MESSAGE. Don't extract pronouns like you, me, he/she/they, we/us as entities.
-
->>>>>>> be6945d3 (chore: apply automated linting and whitespace formatting fixes)
 1. **Speaker Extraction**: Always extract the speaker (the part before the colon `:` in each dialogue line) as the first entity node.
    - If the speaker is mentioned again in the message, treat both mentions as a **single entity**.
 
@@ -206,15 +192,10 @@ Do NOT extract: "basket" (ambiguous bare noun that depends on sentence context)
 
 
 def extract_json(context: dict[str, Any]) -> list[Message]:
-<<<<<<< HEAD
     sys_prompt = (
         'You are an entity extraction specialist for JSON data. '
         'NEVER extract abstract concepts, dates, or generic field values.'
     )
-=======
-    sys_prompt = """You are an AI assistant that extracts entity nodes from JSON.
-    Your primary task is to extract and classify relevant entities from JSON files"""
->>>>>>> be6945d3 (chore: apply automated linting and whitespace formatting fixes)
 
     user_prompt = f"""
 NEVER extract:
@@ -276,15 +257,10 @@ Do NOT extract: "photo" (generic media noun), "event" (generic event noun), "gov
 
 
 def extract_text(context: dict[str, Any]) -> list[Message]:
-<<<<<<< HEAD
     sys_prompt = (
         'You are an entity extraction specialist for unstructured text. '
         'NEVER extract abstract concepts, feelings, or generic words.'
     )
-=======
-    sys_prompt = """You are an AI assistant that extracts entity nodes from text.
-    Your primary task is to extract and classify the speaker and other significant entities mentioned in the provided text."""
->>>>>>> be6945d3 (chore: apply automated linting and whitespace formatting fixes)
 
     user_prompt = f"""
 NEVER extract:

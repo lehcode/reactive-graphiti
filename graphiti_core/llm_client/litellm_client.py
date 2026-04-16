@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = 'gpt-4.1-mini'
 
 
-class OpenAIGenericClient(LLMClient):
+class LiteLLMClient(LLMClient):
     """
-    OpenAIClient is a client class for interacting with OpenAI's language models.
+    LiteLLMClient is a client class for interacting with various LLM models via LiteLLM.
 
     This class extends the LLMClient and provides methods to initialize the client,
     get an embedder, and generate responses from the language model.
@@ -50,7 +50,7 @@ class OpenAIGenericClient(LLMClient):
 
     Methods:
         __init__(config: LLMConfig | None = None, cache: bool = False, client: typing.Any = None):
-            Initializes the OpenAIClient with the provided configuration, cache setting, and client.
+            Initializes the LiteLLMClient with the provided configuration, cache setting, and client.
 
         _generate_response(messages: list[Message]) -> dict[str, typing.Any]:
             Generates a response from the language model based on the provided messages.
@@ -67,7 +67,7 @@ class OpenAIGenericClient(LLMClient):
         max_tokens: int = 16384,
     ):
         """
-        Initialize the OpenAIGenericClient with the provided configuration, cache setting, and client.
+        Initialize the LiteLLMClient with the provided configuration, cache setting, and client.
 
         Args:
             config (LLMConfig | None): The configuration for the LLM client, including API key, model, base URL, temperature, and max tokens.
@@ -255,7 +255,7 @@ class OpenAIGenericClient(LLMClient):
         # Wrap entire operation in tracing span
         with self.tracer.start_span('llm.generate') as span:
             attributes = {
-                'llm.provider': 'openai_generic',
+                'llm.provider': 'litellm',
                 'model.size': model_size.value,
                 'max_tokens': max_tokens,
                 'structured_output.mode': 'json_object'

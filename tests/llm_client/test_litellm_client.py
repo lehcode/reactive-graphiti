@@ -1,4 +1,4 @@
-"""Tests for OpenAI Generic Client.
+"""Tests for LiteLLM Client.
 
 Tests the OpenAI-compatible client used for LiteLLM, Ollama, vLLM, etc.
 """
@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from graphiti_core.llm_client.config import LLMConfig
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.llm_client.litellm_client import LiteLLMClient
 
 
 class TestIsSchemaReturnedAsData:
@@ -18,9 +18,9 @@ class TestIsSchemaReturnedAsData:
     @pytest.fixture
     def client(self):
         """Create a client instance for testing with mocked OpenAI client."""
-        with patch('graphiti_core.llm_client.openai_generic_client.AsyncOpenAI'):
+        with patch('graphiti_core.llm_client.litellm_client.AsyncOpenAI'):
             config = LLMConfig(api_key='test-key')
-            return OpenAIGenericClient(config=config)
+            return LiteLLMClient(config=config)
 
     def test_detects_schema_with_properties(self, client):
         """Schema with 'properties' key should be detected."""
@@ -73,9 +73,9 @@ class TestExtractJson:
     @pytest.fixture
     def client(self):
         """Create a client instance for testing with mocked OpenAI client."""
-        with patch('graphiti_core.llm_client.openai_generic_client.AsyncOpenAI'):
+        with patch('graphiti_core.llm_client.litellm_client.AsyncOpenAI'):
             config = LLMConfig(api_key='test-key')
-            return OpenAIGenericClient(config=config)
+            return LiteLLMClient(config=config)
 
     def test_extracts_clean_json(self, client):
         """Clean JSON without trailing text should parse normally."""

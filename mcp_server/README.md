@@ -106,6 +106,7 @@ The server can be configured using a `config.yaml` file, environment variables, 
 ### Default Configuration
 
 The MCP server comes with sensible defaults:
+
 - **Transport**: HTTP (accessible at `http://localhost:8000/mcp/`)
 - **Database**: FalkorDB (combined in single container with MCP server)
 - **LLM**: OpenAI with model gpt-5-mini
@@ -119,12 +120,12 @@ FalkorDB is a Redis-based graph database that comes bundled with the MCP server 
 
 ```yaml
 database:
-  provider: "falkordb"  # Default
+  provider: "falkordb" # Default
   providers:
     falkordb:
       uri: "redis://localhost:6379"
-      password: ""  # Optional
-      database: "default_db"  # Optional
+      password: "" # Optional
+      database: "default_db" # Optional
 ```
 
 #### Neo4j
@@ -139,7 +140,7 @@ database:
       uri: "bolt://localhost:7687"
       username: "neo4j"
       password: "your_password"
-      database: "neo4j"  # Optional, defaults to "neo4j"
+      database: "neo4j" # Optional, defaults to "neo4j"
 ```
 
 #### FalkorDB
@@ -152,8 +153,8 @@ database:
   providers:
     falkordb:
       uri: "redis://localhost:6379"
-      password: ""  # Optional
-      database: "default_db"  # Optional
+      password: "" # Optional
+      database: "default_db" # Optional
 ```
 
 ### Configuration File (config.yaml)
@@ -162,14 +163,14 @@ The server supports multiple LLM providers (OpenAI, Anthropic, Gemini, Groq) and
 
 ```yaml
 server:
-  transport: "http"  # Default. Options: stdio, http
+  transport: "http" # Default. Options: stdio, http
 
 llm:
-  provider: "openai"  # or "anthropic", "gemini", "groq", "azure_openai", "openai_generic"
-  model: "gpt-4.1"  # Default model
+  provider: "openai" # or "anthropic", "gemini", "groq", "azure_openai", "openai_generic"
+  model: "gpt-4.1" # Default model
 
 database:
-  provider: "falkordb"  # Default. Options: "falkordb", "neo4j"
+  provider: "falkordb" # Default. Options: "falkordb", "neo4j"
 ```
 
 ### Using OpenAI-Compatible APIs (LiteLLM, Ollama, vLLM)
@@ -181,7 +182,7 @@ The `openai_generic` provider supports any OpenAI-compatible API, including Lite
 ```yaml
 llm:
   provider: "openai_generic"
-  model: "gemini/gemini-2.0-flash"  # or any LiteLLM model
+  model: "gemini/gemini-2.0-flash" # or any LiteLLM model
   providers:
     openai:
       api_key: "your-litellm-key"
@@ -193,14 +194,14 @@ llm:
 ```yaml
 llm:
   provider: "openai_generic"
-  model: "llama3.2"  # or your preferred Ollama model
+  model: "llama3.2" # or your preferred Ollama model
   providers:
     openai:
-      api_key: "ollama"  # dummy key required
+      api_key: "ollama" # dummy key required
       base_url: "http://localhost:11434/v1"
 
 embedder:
-  provider: "sentence_transformers"  # recommended for local setup
+  provider: "sentence_transformers" # recommended for local setup
   model: "all-MiniLM-L6-v2"
 ```
 
@@ -272,6 +273,7 @@ docker compose up
 ```
 
 This starts a single container with:
+
 - HTTP transport on `http://localhost:8000/mcp/`
 - FalkorDB graph database on `localhost:6379`
 - FalkorDB web UI on `http://localhost:3000`
@@ -355,20 +357,24 @@ Graphiti's ingestion pipelines are designed for high concurrency, controlled by 
 #### Tuning Guidelines by LLM Provider
 
 **OpenAI:**
+
 - Tier 1 (free): 3 RPM → `SEMAPHORE_LIMIT=1-2`
 - Tier 2: 60 RPM → `SEMAPHORE_LIMIT=5-8`
 - Tier 3: 500 RPM → `SEMAPHORE_LIMIT=10-15`
 - Tier 4: 5,000 RPM → `SEMAPHORE_LIMIT=20-50`
 
 **Anthropic:**
+
 - Default tier: 50 RPM → `SEMAPHORE_LIMIT=5-8`
 - High tier: 1,000 RPM → `SEMAPHORE_LIMIT=15-30`
 
 **Azure OpenAI:**
+
 - Consult your quota in Azure Portal and adjust accordingly
 - Start conservative and increase gradually
 
 **Ollama (local):**
+
 - Hardware dependent → `SEMAPHORE_LIMIT=1-5`
 - Monitor CPU/GPU usage and adjust
 
@@ -449,6 +455,7 @@ docker compose -f docker/docker-compose-neo4j.yml up
 ```
 
 Default Neo4j credentials:
+
 - Username: `neo4j`
 - Password: `demodemo`
 - Bolt URI: `bolt://neo4j:7687`
@@ -463,6 +470,7 @@ docker compose -f docker/docker-compose-falkordb.yml up
 ```
 
 FalkorDB configuration:
+
 - Redis port: `6379`
 - Web UI: `http://localhost:3000`
 - Connection: `redis://falkordb:6379`
@@ -470,6 +478,7 @@ FalkorDB configuration:
 #### Accessing the MCP Server
 
 Once running, the MCP server is available at:
+
 - **HTTP endpoint**: `http://localhost:8000/mcp/`
 - **Health check**: `http://localhost:8000/health`
 
@@ -539,7 +548,7 @@ To use the Graphiti MCP server with other MCP-compatible clients, configure it t
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
         "OPENAI_API_KEY": "sk-XXXXXXXX",
-        "MODEL_NAME": "gpt-4.1-mini"
+        "GRAPHITI_EXTRACTOR_MODEL": "gpt-4.1-mini"
       }
     }
   }

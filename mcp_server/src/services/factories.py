@@ -79,7 +79,7 @@ except ImportError:
     HAS_GROQ = False
 
 try:
-    from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+    from graphiti_core.llm_client.litellm_client import LiteLLMClient
 
     HAS_OPENAI_GENERIC = True
 except ImportError:
@@ -304,7 +304,7 @@ class LLMClientFactory:
                     temperature=config.temperature,
                     max_tokens=config.max_tokens,
                 )
-                return OpenAIGenericClient(config=llm_config)
+                return LiteLLMClient(config=config)
 
             case _:
                 raise ValueError(f'Unsupported LLM provider: {provider}')
