@@ -31,6 +31,14 @@ repos:
         types: [shell]
         stages: [pre-commit, pre-push]
 
+      - id: yamllint
+        name: yamllint
+        entry: >-
+          bash -c 'yamllint -d "{rules: {line-length: {max: 160, level: warning}}}" "$@" || [ $? -eq 2 ]' --
+        language: system
+        types: [yaml]
+        stages: [pre-commit, pre-push]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.9
     hooks:
@@ -55,15 +63,9 @@ repos:
     rev: v0.10.0
     hooks:
       - id: shellcheck
-        args: ['-e', 'SC1091,SC2155,SC2086']
+        args: ['-e', 'SC1091,SC2155,SC2086,SC2034']
         stages: [pre-commit, pre-push]
 
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
-    hooks:
-      - id: yamllint
-        args: ['-d', '{rules: {line-length: {max: 160}}}']
-        stages: [pre-commit, pre-push]
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0

@@ -30,6 +30,8 @@ Graphiti is a Python framework for building temporally-aware knowledge graphs de
 - **All new features and integrations require an RFC** (GitHub issue discussing design) before submitting a PR — this includes new database drivers, LLM providers, embedding providers, new API endpoints, and any major architectural change
 - Additionally, any PR over 500 LOC requires an RFC regardless of type
 - All third-party integrations must use the optional dependency pattern:
+
+
   ```python
   from typing import TYPE_CHECKING
   if TYPE_CHECKING:
@@ -40,6 +42,7 @@ Graphiti is a Python framework for building temporally-aware knowledge graphs de
       except ImportError:
           raise ImportError('...') from None
   ```
+
 - New drivers must implement the `GraphDriver` interface and all operations interfaces
 - Code must pass `make lint` (Ruff + Pyright), line length 100, single quotes
 - Tests required: unit tests + integration tests where applicable
