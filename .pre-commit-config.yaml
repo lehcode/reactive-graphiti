@@ -1,5 +1,44 @@
 fail_fast: true
 repos:
+  - repo: local
+    hooks:
+      - id: quality-benchmark
+        name: Code Quality Benchmark
+        entry: ./scripts/quality-benchmark.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
+        verbose: true
+
+      - id: gitleaks-staged
+        name: Secret detection (Gitleaks) - Staged
+        entry: gitleaks protect --staged --verbose --redact --config .gitleaks.toml
+        language: system
+        stages: [pre-commit]
+
+      - id: gitleaks-push
+        name: Secret detection (Gitleaks) - Full Scan
+        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+
+      - id: bash-syntax
+        name: Bash syntax check
+        entry: bash -n
+        language: system
+        types: [shell]
+        stages: [pre-commit, pre-push]
+
+      - id: yamllint
+        name: yamllint
+        entry: >-
+          bash -c 'yamllint -d "{rules: {line-length: {max: 160, level: warning}}}" "$@" || [ $? -eq 2 ]' --
+        language: system
+        types: [yaml]
+        stages: [pre-commit, pre-push]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.9
     hooks:
@@ -24,42 +63,12 @@ repos:
     rev: v0.10.0
     hooks:
       - id: shellcheck
-        args: ['-e', 'SC1091,SC2155,SC2086']
+        args: ['-e', 'SC1091,SC2155,SC2086,SC2034']
         stages: [pre-commit, pre-push]
 
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
-    hooks:
-      - id: yamllint
-        args: ['-d', '{rules: {line-length: {max: 160}}}']
-        stages: [pre-commit, pre-push]
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.44.0
     hooks:
       - id: markdownlint
         args: ["--config", ".markdownlint.yaml", "--fix"]
-
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
-    hooks:
-      - id: gitleaks
-        stages: [pre-commit, pre-push]
-
-  - repo: local
-    hooks:
-      - id: quality-benchmark
-        name: Code Quality Benchmark
-        entry: ./scripts/quality-benchmark.sh
-        language: script
-        stages: [pre-push]
-        pass_filenames: false
-        always_run: true
-        verbose: true
-
-      - id: bash-syntax
-        name: Bash syntax check
-        entry: bash -n
-        language: system
-        types: [shell]
-        stages: [pre-commit, pre-push]

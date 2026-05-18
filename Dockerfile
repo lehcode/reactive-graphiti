@@ -7,14 +7,14 @@ ARG BUILD_DATE
 ARG VCS_REF
 
 # OCI image annotations
-LABEL org.opencontainers.image.title="Graphiti FastAPI Server"
-LABEL org.opencontainers.image.description="FastAPI server for Graphiti temporal knowledge graphs"
+LABEL org.opencontainers.image.title="Reactive Graphiti FastAPI Server"
+LABEL org.opencontainers.image.description="FastAPI server for Reactive Graphiti knowledge graphs"
 LABEL org.opencontainers.image.version="${GRAPHITI_VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${VCS_REF}"
-LABEL org.opencontainers.image.vendor="Zep AI"
-LABEL org.opencontainers.image.source="https://github.com/getzep/graphiti"
-LABEL org.opencontainers.image.documentation="https://github.com/getzep/graphiti/tree/main/server"
+LABEL org.opencontainers.image.vendor="Lehcode"
+LABEL org.opencontainers.image.source="https://github.com/lehcode/reactive-graphiti"
+LABEL org.opencontainers.image.documentation="https://github.com/lehcode/reactive-graphiti/tree/master/server"
 LABEL io.graphiti.core.version="${GRAPHITI_VERSION}"
 
 # Install uv using the installer script
@@ -47,17 +47,36 @@ ARG INSTALL_FALKORDB=false
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev && \
     if [ -n "$GRAPHITI_VERSION" ]; then \
-        if [ "$INSTALL_FALKORDB" = "true" ]; then \
-            uv pip install --system --upgrade "graphiti-core[falkordb]==$GRAPHITI_VERSION"; \
-        else \
-            uv pip install --system --upgrade "graphiti-core==$GRAPHITI_VERSION"; \
-        fi; \
+    if [ "$INSTALL_FALKORDB" = "true" ]; then \
+    uv pip install --system --upgrade "graphiti-core[falkordb]==$GRAPHITI_VERSION"; \
     else \
-        if [ "$INSTALL_FALKORDB" = "true" ]; then \
-            uv pip install --system --upgrade "graphiti-core[falkordb]"; \
-        else \
-            uv pip install --system --upgrade graphiti-core; \
-        fi; \
+    uv pip install --system --upgrade "graphiti-core==$GRAPHITI_VERSION"; \
+    fi; \
+    else \
+    if [ "$INSTALL_FALKORDB" = "true" ]; then \
+    uv pip install --system --upgrade "graphiti-core[falkordb]"; \
+    else \
+    uv pip install --system --upgrade graphiti-core; \
+    fi; \
+    fi
+
+# Install websockets
+# Prefer uv if discoverable in common install locations
+# Fallback: bootstrap pip from the stdlib then install
+RUN PYTHON=/app/.venv/bin/python UVICORN=/app/.venv/bin/uvicorn \
+    if ! "$PYTHON" -c "import websockets" 2>/dev/null; then \
+    echo "[entrypoint] websockets not found — installing..." \
+    for UV_BIN in /usr/local/bin/uv /root/.local/bin/uv /home/app/.local/bin/uv; do \
+    if [ -x "$UV_BIN" ]; then \
+    UV_OFFLINE=0 "$UV_BIN" pip install websockets --python "$PYTHON"; \
+    break; \
+    fi; \
+    done; \
+    if ! "$PYTHON" -c "import websockets" 2>/dev/null; then \
+    "$PYTHON" -m ensurepip --upgrade; \
+    "$PYTHON" -m pip install websockets; \
+    fi; \
+    echo "[entrypoint] websockets installed." \
     fi
 
 # Change ownership to app user

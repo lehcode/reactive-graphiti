@@ -22,7 +22,7 @@ format:
 # Lint code
 lint:
 	$(RUFF) check
-	$(PYRIGHT) ./graphiti_core 
+	$(PYRIGHT) ./graphiti_core
 
 # Run tests
 test:

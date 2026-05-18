@@ -289,6 +289,7 @@ async def extract_edges(
             created_at=utc_now(),
             valid_at=valid_at_datetime,
             invalid_at=invalid_at_datetime,
+            reference_time=episode.valid_at,
         )
         edges.append(edge)
         logger.debug(
@@ -307,7 +308,18 @@ async def resolve_extracted_edges(
     entities: list[EntityNode],
     edge_types: dict[str, type[BaseModel]],
     edge_type_map: dict[tuple[str, str], list[str]],
-) -> tuple[list[EntityEdge], list[EntityEdge]]:
+    existing_edges_override: list[EntityEdge] | None = None,
+) -> tuple[list[EntityEdge], list[EntityEdge], list[EntityEdge]]:
+    """Resolve extracted edges against existing graph context.
+
+    Returns
+    -------
+    tuple[list[EntityEdge], list[EntityEdge], list[EntityEdge]]
+        A tuple of (resolved_edges, invalidated_edges, new_edges) where:
+        - resolved_edges: All edges after resolution (may include existing edges if duplicates found)
+        - invalidated_edges: Edges that were invalidated/contradicted by new information
+        - new_edges: Only edges that are new to the graph (not duplicates of existing edges)
+    """
     # Fast path: deduplicate exact matches within the extracted edges before parallel processing
     seen: dict[tuple[str, str, str], EntityEdge] = {}
     deduplicated_edges: list[EntityEdge] = []
@@ -335,6 +347,26 @@ async def resolve_extracted_edges(
             for edge in extracted_edges
         ]
     )
+
+    # Merge override edges (e.g. from the recent Redis dedup cache) into
+    # the per-extracted-edge candidate lists so that recently resolved edges
+    # that are not yet visible in the graph-service indexes are still
+    # considered during deduplication.
+    if existing_edges_override:
+        override_by_pair: dict[tuple[str, str], list[EntityEdge]] = {}
+        for oe in existing_edges_override:
+            key = (oe.source_node_uuid, oe.target_node_uuid)
+            override_by_pair.setdefault(key, []).append(oe)
+
+        for i, extracted_edge in enumerate(extracted_edges):
+            pair_key = (extracted_edge.source_node_uuid, extracted_edge.target_node_uuid)
+            overrides = override_by_pair.get(pair_key, [])
+            if overrides:
+                existing_uuids = {e.uuid for e in valid_edges_list[i]}
+                for oe in overrides:
+                    if oe.uuid not in existing_uuids:
+                        valid_edges_list[i].append(oe)
+                        existing_uuids.add(oe.uuid)
 
     related_edges_results: list[SearchResults] = await semaphore_gather(
         *[
@@ -445,12 +477,16 @@ async def resolve_extracted_edges(
 
     resolved_edges: list[EntityEdge] = []
     invalidated_edges: list[EntityEdge] = []
+    new_edges: list[EntityEdge] = []
     for result in results:
         resolved_edge = result[0]
         invalidated_edge_chunk = result[1]
+        duplicate_edges = result[2]
 
         resolved_edges.append(resolved_edge)
         invalidated_edges.extend(invalidated_edge_chunk)
+        if not duplicate_edges:
+            new_edges.append(resolved_edge)
 
     logger.debug(f'Resolved edges: {[(e.name, e.uuid) for e in resolved_edges]}')
 
@@ -531,6 +567,22 @@ async def resolve_extracted_edge(
         The resolved edge, any duplicates, and edges to invalidate.
     """
     if len(related_edges) == 0 and len(existing_edges) == 0:
+        # Still extract custom attributes even when no dedup/invalidation is needed
+        edge_model = edge_type_candidates.get(extracted_edge.name) if edge_type_candidates else None
+        if edge_model is not None and len(edge_model.model_fields) != 0:
+            edge_attributes_context = {
+                'fact': extracted_edge.fact,
+                'reference_time': episode.valid_at if episode is not None else None,
+                'existing_attributes': extracted_edge.attributes,
+            }
+            edge_attributes_response = await llm_client.generate_response(
+                prompt_library.extract_edges.extract_attributes(edge_attributes_context),
+                response_model=edge_model,  # type: ignore
+                model_size=ModelSize.small,
+                prompt_name='extract_edges.extract_attributes',
+            )
+            extracted_edge.attributes = edge_attributes_response
+
         return extracted_edge, [], []
 
     # Fast path: if the fact text and endpoints already exist verbatim, reuse the matching edge.

@@ -3,14 +3,14 @@ services:
     build:
       context: .
     ports:
-      - "18000:8000"
+      - "${GRAPH_PORT_HOST:-8000}:8000"
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthcheck')",
+          "import urllib.request; urllib.request.urlopen('http://host.docker.internal:${GRAPH_PORT_HOST:-8000}/healthcheck')",
         ]
       interval: 10s
       timeout: 5s
@@ -38,25 +38,25 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget --no-verbose --tries=1 --spider http://localhost:${NEO4J_PORT:-7474} || exit 1",
+          "wget -qO- http://localhost:${NEO4J_HTTP_PORT_HOST:-7474} || exit 1",
         ]
       interval: 5s
       timeout: 10s
       retries: 10
-      start_period: 3s
+      start_period: 30s
     ports:
-      - "17474:7474" # HTTP
-      - "${NEO4J_PORT:-17687}:${NEO4J_PORT:-7687}" # Bolt
+      - "${NEO4J_HTTP_PORT_HOST:-7474}:7474" # HTTP
+      - "${NEO4J_BOLT_PORT_HOST:-7687}:7687" # Bolt
     volumes:
       - neo4j_data:/data
     environment:
-      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      - NEO4J_AUTH=${NEO4J_USER:-}/${NEO4J_PASSWORD:-}
 
   rg-falkordb:
     image: falkordb/falkordb:latest
     profiles: ["falkordb"]
     ports:
-      - "16379:6379"
+      - "${FALKORDB_PORT:-6379}:6379"
     volumes:
       - reactive-graph_falkordb_data:/data
     environment:
@@ -75,22 +75,22 @@ services:
       context: .
     profiles: ["falkordb"]
     ports:
-      - "18001:8001"
+      - "${GRAPH_PORT_HOST:-8000}:8000"
     depends_on:
       rg-falkordb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthcheck')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://host.docker.internal:${GRAPH_PORT_HOST:-8000}/healthcheck')"]
       interval: 10s
       timeout: 5s
       retries: 3
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - FALKORDB_HOST=rg-falkordb
-      - FALKORDB_PORT=6379
+      - FALKORDB_PORT=${FALKORDB_PORT:-6379}
       - FALKORDB_DATABASE=default_db
       - GRAPHITI_BACKEND=falkordb
-      - PORT=8001
+      - PORT=8000
       - db_backend=falkordb
 
 volumes:

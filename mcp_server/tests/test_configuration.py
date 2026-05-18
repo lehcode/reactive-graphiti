@@ -133,10 +133,10 @@ def test_llm_factory(config: GraphitiConfig):
         generic_config.providers.openai.api_url = 'http://localhost:11434/v1'
 
     try:
-        from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+        from graphiti_core.llm_client.litellm_client import LiteLLMClient
 
         client = LLMClientFactory.create(generic_config)
-        assert isinstance(client, OpenAIGenericClient)
+        assert isinstance(client, LiteLLMClient)
         print('✓ Factory supports openai_generic provider')
     except Exception as e:
         print(f'✗ Factory openai_generic provider failed: {e}')

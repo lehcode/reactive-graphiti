@@ -1,0 +1,39 @@
+description = "Rebase/sync current branch with upstream/main branch with conflicts resolve."
+prompt = """
+
+### 1. Context Analysis
+Analyze current diff:
+- git fetch upstream
+- git log HEAD..upstream/main --oneline --graph --decorate --name-status
+
+Create backup of current branch
+
+### 2. Provide analysis
+- git status && git branch backup-develop-pre-sync
+
+### 3. Git Conflicts Resolution
+Resolve each conflict manually with coder-agent.
+
+For every file Git marks as "both modified," you must manually decide which changes to keep.
+
+Conflicts resolition pattern:
+1. Identify conflicting files: Use `git status -s` to see a list of unmerged paths.
+2. Analyze files that were deleted in upstream while exisit in local branch. Analyze if they require deletion in local branch.
+3. Analyze conflicting changes timestamps.
+4. Local changes have precedence when rebasing integration.
+5. Evaluate conflict threat
+6. Evaluate solution impact
+7. Apply if approved by me (See Seek Confirmation (MANDATORY))
+8. If more conflicts remain, repeat the process for the next one.
+
+### 4. Seek Confirmation (MANDATORY)
+Present very proposed conflict resolution to me. You **MUST NOT** edit files without my explicit approval for the specific conflict resoltion.
+
+### 5. Execute and Verify
+Only after I say "Yes" or "Proceed":
+1. Execute git rebase
+2. Resolve conflicts
+3. Run `git status` to verify and confirm success.
+4. If more chunks remain, repeat the process for the next one.
+
+"""

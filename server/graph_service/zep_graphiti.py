@@ -9,7 +9,7 @@ from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, NodeNotFoundError
 from graphiti_core.llm_client import LLMClient  # type: ignore
 from graphiti_core.llm_client.config import LLMConfig as GraphitiLLMConfig
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.llm_client.litellm_client import LiteLLMClient
 from graphiti_core.nodes import EntityNode, EpisodicNode  # type: ignore
 
 from graph_service.config import Settings, ZepEnvDep
@@ -107,7 +107,7 @@ def create_configured_client(settings: Settings, llm_tier: str | None = None) ->
         model=model_name,
         temperature=0,
     )
-    llm_client = OpenAIGenericClient(config=llm_config)
+    llm_client = LiteLLMClient(config=llm_config)
 
     # 3. Create the Graphiti client with our custom LLM and embedder
     client = ZepGraphiti(

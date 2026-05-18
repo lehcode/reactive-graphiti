@@ -6,7 +6,7 @@ When I first joined this project, I was overwhelmed trying to figure out where t
 
 We've restructured our contribution paths to solve this problem:
 
-# Four Ways to Get Involved
+## Four Ways to Get Involved
 
 ### Pick Up Existing Issues
 
@@ -36,8 +36,23 @@ Join our [Discord server](https://discord.com/invite/W8Kw6bsgXQ) community and p
 
 ## What happens next?
 
-### Notes for Large Changes
-> Please keep the changes as concise as possible. For major architectural changes (>500 LOC), we would expect a GitHub issue (RFC) discussing the technical design and justification. Otherwise, we will tag it with rfc-required and might not go through the PR.
+### Contribution Priorities
+
+We prioritize **bug fixes to existing functionality**. If you've found a bug, please submit a fix — these PRs get the most attention and fastest review.
+
+### RFC Required for New Features and Integrations
+
+**All new features and integrations require an RFC** (a GitHub issue discussing the technical design and justification) **before submitting a PR.** This includes:
+
+- New database drivers
+- New LLM provider clients
+- New embedding provider clients
+- New API endpoints or capabilities
+- Any major architectural change
+
+Additionally, any PR over 500 LOC requires an RFC regardless of type.
+
+PRs submitted without a linked RFC issue will be tagged with `needs-rfc` and will not be reviewed until the RFC is approved. Please open the issue first, discuss the design, and then submit your PR referencing it.
 
 Once you've found an issue tagged with "good first issue" or "help wanted," or prepared an example to share, here's how to turn that into a contribution:
 
@@ -49,18 +64,22 @@ Once you've found an issue tagged with "good first issue" or "help wanted," or p
 
 1. Fork the repository on GitHub.
 2. Clone your fork locally:
+
    ```
    git clone https://github.com/getzep/graphiti
    cd graphiti
    ```
+
 3. Set up your development environment:
 
    - Ensure you have Python 3.10+ installed.
-   - Install uv: https://docs.astral.sh/uv/getting-started/installation/
+   - Install uv: <https://docs.astral.sh/uv/getting-started/installation/>
    - Install project dependencies:
+
      ```
      make install
      ```
+
    - To run integration tests, set the appropriate environment variables
 
      ```
@@ -77,20 +96,27 @@ Once you've found an issue tagged with "good first issue" or "help wanted," or p
 ## Making Changes
 
 1. Create a new branch for your changes:
+
    ```
    git checkout -b your-branch-name
    ```
+
 2. Make your changes in the codebase.
 3. Write or update tests as necessary.
 4. Run the tests to ensure they pass:
+
    ```
    make test
    ```
+
 5. Format your code:
+
    ```
    make format
    ```
+
 6. Run linting checks:
+
    ```
    make lint
    ```
@@ -98,14 +124,18 @@ Once you've found an issue tagged with "good first issue" or "help wanted," or p
 ## Submitting Changes
 
 1. Commit your changes:
+
    ```
    git commit -m "Your detailed commit message"
    ```
+
 2. Push to your fork:
+
    ```
    git push origin your-branch-name
    ```
-3. Submit a pull request through the GitHub website to https://github.com/getzep/graphiti.
+
+3. Submit a pull request through the GitHub website to <https://github.com/getzep/graphiti>.
 
 ## Pull Request Guidelines
 
@@ -139,6 +169,7 @@ When contributing integrations for third-party services (LLM providers, embeddin
 All third-party integrations must be optional dependencies to keep the core library lightweight. Follow this pattern:
 
 1. **Add to `pyproject.toml`**: Define your dependency as an optional extra AND include it in the dev extra:
+
    ```toml
    [project.optional-dependencies]
    your-service = ["your-package>=1.0.0"]
@@ -150,6 +181,7 @@ All third-party integrations must be optional dependencies to keep the core libr
    ```
 
 2. **Use TYPE_CHECKING pattern**: In your integration module, import dependencies conditionally:
+
    ```python
    from typing import TYPE_CHECKING
    
@@ -216,7 +248,7 @@ For reference implementations, start with `graphiti_core/driver/neo4j_driver.py`
 - Mark integration tests with `_int` suffix if they require external services
 - Include both unit tests and integration tests where applicable
 
-# Questions?
+## Questions?
 
 Stuck on a contribution or have a half-formed idea? Come say hello in our [Discord server](https://discord.com/invite/W8Kw6bsgXQ). Whether you're ready to contribute or just want to learn more, we're happy to have you! It's faster than GitHub issues and you'll find both maintainers and fellow contributors ready to help.
 

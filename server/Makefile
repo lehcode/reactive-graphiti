@@ -22,7 +22,7 @@ format:
 # Lint code
 lint:
 	$(RUFF) check
-	$(PYRIGHT) . 
+	$(PYRIGHT) .
 
 # Run tests
 test:
