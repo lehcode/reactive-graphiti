@@ -5,6 +5,7 @@ import traceback
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, FastAPI, status
 from graphiti_core.nodes import EpisodeType  # type: ignore
@@ -13,12 +14,15 @@ from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # 
 from graph_service.dto import AddEntityNodeRequest, AddMessagesRequest, Result
 from graph_service.zep_graphiti import ZepGraphitiDep
 
+if TYPE_CHECKING:
+    from graph_service.config import Settings
+
 
 class AsyncWorker:
     def __init__(self):
         self.queue = asyncio.Queue()
         self.task = None
-        self.settings = None
+        self.settings: Settings | None = None
         self.MAX_RETRIES = 5
         self.RETRY_DELAY_BASE = 10
 
@@ -86,9 +90,9 @@ async def lifespan(_: FastAPI):
 router = APIRouter(lifespan=lifespan)
 
 
-async def add_messages_task(request: AddMessagesRequest, settings: any):
+async def add_messages_task(request: AddMessagesRequest, settings: Any):
     from graphiti_core.llm_client.config import LLMConfig as GraphitiLLMConfig
-    from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+    from graphiti_core.llm_client.litellm_client import LiteLLMClient
     from graphiti_core.prompts.models import Message as LLMMessage
 
     from ..zep_graphiti import create_configured_client
@@ -135,7 +139,7 @@ async def add_messages_task(request: AddMessagesRequest, settings: any):
                             model=chat_model,
                             temperature=0.7,
                         )
-                        chat_client = OpenAIGenericClient(config=chat_config)
+                        chat_client = LiteLLMClient(config=chat_config)
 
                         resp = await chat_client.generate_response(
                             messages=[LLMMessage(role='user', content=slack_prompt)]

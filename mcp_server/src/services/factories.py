@@ -13,7 +13,6 @@ from config.schema import (
     EmbedderConfig,
     LLMConfig,
 )
-from utils.utils import create_azure_credential_token_provider
 
 # Try to import FalkorDriver if available
 try:
@@ -161,7 +160,7 @@ class LLMClientFactory:
                     api_key=api_key,
                     model=config.model,
                     small_model=small_model,
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
 
@@ -173,8 +172,7 @@ class LLMClientFactory:
                 if is_reasoning_model:
                     return OpenAIClient(config=llm_config, reasoning='minimal', verbosity='low')
                 else:
-                    # For non-reasoning models, explicitly pass None to disable these parameters
-                    return OpenAIClient(config=llm_config, reasoning=None, verbosity=None)
+                    return OpenAIClient(config=llm_config)
 
             case 'azure_openai':
                 if not HAS_AZURE_LLM:
@@ -216,7 +214,7 @@ class LLMClientFactory:
                     api_key=api_key,
                     base_url=base_url,
                     model=config.model,
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
 
@@ -240,7 +238,7 @@ class LLMClientFactory:
                 llm_config = GraphitiLLMConfig(
                     api_key=api_key,
                     model=config.model,
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
                 return AnthropicClient(config=llm_config)
@@ -257,7 +255,7 @@ class LLMClientFactory:
                 llm_config = GraphitiLLMConfig(
                     api_key=api_key,
                     model=config.model,
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
                 return GeminiClient(config=llm_config)
@@ -275,7 +273,7 @@ class LLMClientFactory:
                     api_key=api_key,
                     base_url=config.providers.groq.api_url,
                     model=config.model,
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
                 return GroqClient(config=llm_config)
@@ -301,10 +299,10 @@ class LLMClientFactory:
                     base_url=base_url,
                     model=config.model,
                     small_model='gpt-4.1-mini',
-                    temperature=config.temperature,
+                    temperature=config.temperature if config.temperature is not None else 0.0,
                     max_tokens=config.max_tokens,
                 )
-                return LiteLLMClient(config=config)
+                return LiteLLMClient(config=llm_config)
 
             case _:
                 raise ValueError(f'Unsupported LLM provider: {provider}')
