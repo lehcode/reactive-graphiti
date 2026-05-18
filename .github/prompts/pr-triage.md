@@ -31,7 +31,6 @@ Graphiti is a Python framework for building temporally-aware knowledge graphs de
 - Additionally, any PR over 500 LOC requires an RFC regardless of type
 - All third-party integrations must use the optional dependency pattern:
 
-
   ```python
   from typing import TYPE_CHECKING
   if TYPE_CHECKING:
