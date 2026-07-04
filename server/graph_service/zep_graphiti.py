@@ -20,9 +20,14 @@ logger = logging.getLogger(__name__)
 
 class ZepGraphiti(Graphiti):
     def __init__(
-        self, uri: str, user: str, password: str, llm_client: LLMClient | None = None, embedder=None
+        self,
+        uri: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        llm_client: LLMClient | None = None,
+        **kwargs,
     ):
-        super().__init__(uri, user, password, llm_client, embedder=embedder)
+        super().__init__(uri, user, password, llm_client, **kwargs)  # type: ignore
 
     async def save_entity_node(self, name: str, uuid: str, group_id: str, summary: str = ''):
         new_node = EntityNode(

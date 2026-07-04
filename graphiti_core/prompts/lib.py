@@ -32,6 +32,9 @@ from .extract_edges import versions as extract_edges_versions
 from .extract_nodes import Prompt as ExtractNodesPrompt
 from .extract_nodes import Versions as ExtractNodesVersions
 from .extract_nodes import versions as extract_nodes_versions
+from .extract_nodes_and_edges import Prompt as ExtractNodesAndEdgesPrompt
+from .extract_nodes_and_edges import Versions as ExtractNodesAndEdgesVersions
+from .extract_nodes_and_edges import versions as extract_nodes_and_edges_versions
 from .models import Message, PromptFunction
 from .prompt_helpers import DO_NOT_ESCAPE_UNICODE
 from .summarize_nodes import Prompt as SummarizeNodesPrompt
@@ -46,6 +49,7 @@ class PromptLibrary(Protocol):
     extract_nodes: ExtractNodesPrompt
     dedupe_nodes: DedupeNodesPrompt
     extract_edges: ExtractEdgesPrompt
+    extract_nodes_and_edges: ExtractNodesAndEdgesPrompt
     dedupe_edges: DedupeEdgesPrompt
     summarize_nodes: SummarizeNodesPrompt
     summarize_sagas: SummarizeSagasPrompt
@@ -56,6 +60,7 @@ class PromptLibraryImpl(TypedDict):
     extract_nodes: ExtractNodesVersions
     dedupe_nodes: DedupeNodesVersions
     extract_edges: ExtractEdgesVersions
+    extract_nodes_and_edges: ExtractNodesAndEdgesVersions
     dedupe_edges: DedupeEdgesVersions
     summarize_nodes: SummarizeNodesVersions
     summarize_sagas: SummarizeSagasVersions
@@ -89,6 +94,7 @@ PROMPT_LIBRARY_IMPL: PromptLibraryImpl = {
     'extract_nodes': extract_nodes_versions,
     'dedupe_nodes': dedupe_nodes_versions,
     'extract_edges': extract_edges_versions,
+    'extract_nodes_and_edges': extract_nodes_and_edges_versions,
     'dedupe_edges': dedupe_edges_versions,
     'summarize_nodes': summarize_nodes_versions,
     'summarize_sagas': summarize_sagas_versions,
