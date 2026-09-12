@@ -49,7 +49,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app/mcp
 
 # Accept graphiti-core version as build argument
-ARG GRAPHITI_CORE_VERSION=0.29.1
+ARG GRAPHITI_CORE_VERSION
 ARG SOCKET_FIREWALL_ENABLED=false
 # Unique per release run so enforced builds re-resolve and re-download instead
 # of reusing cached layers, which sfw would never see.
@@ -58,35 +58,7 @@ ARG SOCKET_SCAN_ID=
 # Copy project files for dependency installation
 COPY pyproject.toml uv.lock ./
 
-# Remove the local path override for graphiti-core in Docker builds
-# and regenerate lock file to match the PyPI version.
-# When socket_api_key is mounted (official releases), route through sfw.
-RUN --mount=type=secret,id=socket_api_key \
-    set -eu; \
-    export SFW_TELEMETRY_DISABLED=true; \
-    export SFW_CUSTOM_REGISTRIES="wrap:storage.googleapis.com,wrap:classic.yarnpkg.com,wrap:files.pythonhosted.org"; \
-    if [ "$SOCKET_FIREWALL_ENABLED" = "true" ]; then \
-      if [ ! -s /run/secrets/socket_api_key ]; then \
-        echo "ERROR: SOCKET_FIREWALL_ENABLED=true but socket_api_key is missing" >&2; \
-        exit 1; \
-      fi; \
-      export SOCKET_API_KEY="$(cat /run/secrets/socket_api_key)"; \
-      export UV_NO_CACHE=1; \
-      echo "Socket Firewall enforced (scan id: ${SOCKET_SCAN_ID})"; \
-      UV_CMD="sfw uv"; \
-    else \
-      echo "socket_api_key absent; installing without Socket Firewall"; \
-      UV_CMD="uv"; \
-    fi; \
-    sed -i '/\[tool\.uv\.sources\]/,/graphiti-core/d' pyproject.toml; \
-    if [ -n "${GRAPHITI_CORE_VERSION}" ]; then \
-      sed -i "s/graphiti-core\[falkordb\][>=]\+[0-9]\+\.[0-9]\+\.[0-9]\+/graphiti-core[falkordb]==${GRAPHITI_CORE_VERSION}/" pyproject.toml; \
-    fi; \
-    echo "Regenerating lock file for PyPI graphiti-core..."; \
-    rm -f uv.lock; \
-    $UV_CMD lock
-
-# Install Python dependencies (exclude dev dependency group)
+# Install Python dependencies using repo's own pyproject.toml + uv.lock
 # Include optional provider extras so the image matches the providers
 # advertised by the MCP server configuration and docs.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -109,8 +81,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi; \
     $UV_CMD sync --no-group dev --extra providers --extra azure
 
-# Store graphiti-core version
-RUN echo "${GRAPHITI_CORE_VERSION}" > /app/mcp/.graphiti-core-version
+# Record build-time version from env arg
+RUN echo "${GRAPHITI_CORE_VERSION:-unknown}" > /app/mcp/.graphiti-core-version
 
 # Copy MCP server application code
 COPY main.py ./
