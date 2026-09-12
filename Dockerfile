@@ -43,41 +43,14 @@ COPY ./server/graph_service ./graph_service
 # Install server dependencies (without graphiti-core from lockfile)
 # Then install graphiti-core from PyPI at the desired version
 # This prevents the stale lockfile from pinning an old graphiti-core version
-ARG INSTALL_FALKORDB=false
+COPY docker/install_graphiti.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev && \
-    if [ -n "$GRAPHITI_VERSION" ]; then \
-    if [ "$INSTALL_FALKORDB" = "true" ]; then \
-    uv pip install --system --upgrade "graphiti-core[falkordb]==$GRAPHITI_VERSION"; \
-    else \
-    uv pip install --system --upgrade "graphiti-core==$GRAPHITI_VERSION"; \
-    fi; \
-    else \
-    if [ "$INSTALL_FALKORDB" = "true" ]; then \
-    uv pip install --system --upgrade "graphiti-core[falkordb]"; \
-    else \
-    uv pip install --system --upgrade graphiti-core; \
-    fi; \
-    fi
+    bash /tmp/install_graphiti.sh
 
-# Install websockets
-# Prefer uv if discoverable in common install locations
-# Fallback: bootstrap pip from the stdlib then install
-RUN PYTHON=/app/.venv/bin/python UVICORN=/app/.venv/bin/uvicorn \
-    if ! "$PYTHON" -c "import websockets" 2>/dev/null; then \
-    echo "[entrypoint] websockets not found — installing..." \
-    for UV_BIN in /usr/local/bin/uv /root/.local/bin/uv /home/app/.local/bin/uv; do \
-    if [ -x "$UV_BIN" ]; then \
-    UV_OFFLINE=0 "$UV_BIN" pip install websockets --python "$PYTHON"; \
-    break; \
-    fi; \
-    done; \
-    if ! "$PYTHON" -c "import websockets" 2>/dev/null; then \
-    "$PYTHON" -m ensurepip --upgrade; \
-    "$PYTHON" -m pip install websockets; \
-    fi; \
-    echo "[entrypoint] websockets installed." \
-    fi
+# Install websockets with fallback logic (uv first, then pip)
+COPY docker/install_websockets.sh /tmp/
+RUN bash /tmp/install_websockets.sh
 
 # Change ownership to app user
 RUN chown -R app:app /app
