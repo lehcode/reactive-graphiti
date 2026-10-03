@@ -140,38 +140,22 @@ config: GraphitiConfig
 
 # MCP server instructions
 GRAPHITI_MCP_INSTRUCTIONS = """
-Graphiti is a memory service for AI agents built on a temporally-aware knowledge graph. It performs
-well with dynamic data such as user interactions, changing enterprise data, and external information.
+Graphiti is a memory service for AI agents built on a temporally-aware knowledge graph.
 
-Graphiti transforms information into a richly connected knowledge network, allowing you to
-capture relationships between concepts, entities, and information. The system organizes data as episodes
-(content snippets), nodes (entities), and facts (relationships between entities), creating a dynamic,
-queryable memory store that evolves with new information. Graphiti supports multiple data formats, including
-structured JSON data, enabling seamless integration with existing data pipelines and systems.
-
-Facts contain temporal metadata, allowing you to track the time of creation and whether a fact is invalid
-(superseded by new information).
-
-Core tools:
-- add_memory: add an episode (text, message, or JSON). Supports reference_time (bi-temporal),
-  excluded_entity_types and custom_extraction_instructions to steer extraction,
-  previous_episode_uuids to supply explicit context, update_communities to refresh community summaries,
-  and saga / saga_previous_episode_uuid to associate the episode with an ordered saga.
-- add_triplet: write a single fact (source entity -> fact -> target entity) directly, bypassing
-  extraction. graphiti-core resolves/deduplicates the endpoint entities and generates embeddings.
-- search_nodes: semantic + keyword + graph search over entities, optionally filtered by entity type
-  (node label) and re-ranked around a center_node_uuid.
-- search_memory_facts: search over facts (edges), optionally filtered by edge (fact) type and by
-  valid_at / invalid_at date ranges.
-- summarize_saga: generate or refresh the running summary of a saga's episodes.
-- build_communities: detect entity communities and produce higher-level community summaries.
-- get_episode_entities: trace provenance — the entities and facts created by specific episode UUIDs.
-- get_entity_edge / get_episodes: retrieve specific facts or episodes.
-- delete_episode: remove an episode and cascade-delete the entities/facts it solely created.
-- delete_entity_edge / clear_graph: remove a fact, or clear a group's data.
-
-The server connects to a database for persistent storage and uses language models for certain operations.
-Each piece of information is organized by group_id, allowing you to maintain separate knowledge domains.
+Core tools and their required parameters:
+- add_memory(name: str, episode_body: str, ...): REQUIRED args are 'name' (string) and 'episode_body' (string). Do NOT use 'episode_name'.
+- add_triplet(source_node_name: str, edge_name: str, fact: str, target_node_name: str, ...): REQUIRED: all four are strings.
+- search_nodes(query: str, ...): REQUIRED: 'query' is a string. Optional 'group_ids' is string or list of strings.
+- search_memory_facts(query: str, ...): REQUIRED: 'query' is a string. Optional filters for dates and edge types.
+- get_episode_entities(episode_uuids: list[str]): REQUIRED: list of episode UUIDs.
+- get_entity_edge(uuid: str): REQUIRED: single UUID string.
+- get_episodes(group_ids: str|list[str], max_episodes: int): Optional 'group_ids', required 'max_episodes'.
+- summarize_saga(saga_name: str, group_id: str): REQUIRED: 'saga_name', optional 'group_id'.
+- build_communities(group_ids: str|list[str]): Optional 'group_ids'.
+- delete_episode(uuid: str): REQUIRED: single UUID string.
+- delete_entity_edge(uuid: str): REQUIRED: single UUID string.
+- clear_graph(group_ids: str|list[str]): Optional 'group_ids'.
+- get_status(): No arguments.
 
 When adding information, provide descriptive names and detailed content to improve search quality.
 When searching, use specific queries and consider filtering by group_id for more relevant results.
@@ -398,6 +382,7 @@ async def add_memory(
     update_communities: bool = False,
     saga: str | None = None,
     saga_previous_episode_uuid: str | None = None,
+    codemode: bool = False,
 ) -> SuccessResponse | ErrorResponse:
     """Add an episode to memory. This is the primary way to add information to the graph.
 
@@ -437,6 +422,7 @@ async def add_memory(
                                  episodes so their evolving narrative can be summarized via summarize_saga.
         saga_previous_episode_uuid (str, optional): UUID of the preceding episode in the saga, used to
                                  order episodes within the saga.
+        codemode (bool, optional): Reserved. Always False. Accepts stray client args silently.
 
     Examples:
         # Adding plain text content
@@ -526,6 +512,7 @@ async def search_nodes(
     max_nodes: int = 10,
     entity_types: list[str] | None = None,
     center_node_uuid: str | None = None,
+    codemode: bool = False,
 ) -> NodeSearchResponse | ErrorResponse:
     """Search for nodes (entities) in the graph memory.
 
@@ -537,6 +524,7 @@ async def search_nodes(
         entity_types: Optional list of entity type names (node labels) to filter by
         center_node_uuid: Optional UUID of a node to center the search around. Results
             closer to this node in the graph are ranked higher.
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -607,6 +595,7 @@ async def search_memory_facts(
     valid_at_before: str | None = None,
     invalid_at_after: str | None = None,
     invalid_at_before: str | None = None,
+    codemode: bool = False,
 ) -> FactSearchResponse | ErrorResponse:
     """Search the graph memory for relevant facts (entity edges).
 
@@ -622,6 +611,7 @@ async def search_memory_facts(
         valid_at_before: Optional ISO-8601 upper bound on a fact's valid_at
         invalid_at_after: Optional ISO-8601 lower bound on a fact's invalid_at
         invalid_at_before: Optional ISO-8601 upper bound on a fact's invalid_at
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -677,11 +667,15 @@ async def search_memory_facts(
 
 
 @mcp.tool()
-async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
+async def delete_entity_edge(
+    uuid: str,
+    codemode: bool = False,
+) -> SuccessResponse | ErrorResponse:
     """Delete an entity edge from the graph memory.
 
     Args:
         uuid: UUID of the entity edge to delete
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -703,7 +697,10 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
 
 
 @mcp.tool()
-async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
+async def delete_episode(
+    uuid: str,
+    codemode: bool = False,
+) -> SuccessResponse | ErrorResponse:
     """Delete an episode from the graph memory.
 
     Uses Graphiti.remove_episode, which cascades the deletion: entities and facts
@@ -712,6 +709,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
 
     Args:
         uuid: UUID of the episode to delete
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -732,11 +730,15 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
 
 
 @mcp.tool()
-async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
+async def get_entity_edge(
+    uuid: str,
+    codemode: bool = False,
+) -> dict[str, Any] | ErrorResponse:
     """Get an entity edge from the graph memory by its UUID.
 
     Args:
         uuid: UUID of the entity edge to retrieve
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -762,6 +764,7 @@ async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
 async def get_episodes(
     group_ids: str | list[str] | None = None,
     max_episodes: int = 10,
+    codemode: bool = False,
 ) -> EpisodeSearchResponse | ErrorResponse:
     """Get episodes from the graph memory.
 
@@ -769,6 +772,7 @@ async def get_episodes(
         group_ids: Optional group ID, or list of group IDs, to filter results (a single
             string is accepted and treated as a one-element list)
         max_episodes: Maximum number of episodes to return (default: 10)
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -830,7 +834,9 @@ async def get_episodes(
 
 @mcp.tool()
 async def summarize_saga(
-    saga_name: str, group_id: str | None = None
+    saga_name: str,
+    group_id: str | None = None,
+    codemode: bool = False,
 ) -> SagaSummaryResponse | ErrorResponse:
     """Summarize a saga: an ordered group of related episodes.
 
@@ -844,6 +850,7 @@ async def summarize_saga(
     Args:
         saga_name: The saga name — the same value passed as ``saga`` to add_memory.
         group_id: Optional group ID the saga belongs to. Falls back to the default group.
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -884,6 +891,7 @@ async def summarize_saga(
 @mcp.tool()
 async def build_communities(
     group_ids: str | list[str] | None = None,
+    codemode: bool = False,
 ) -> BuildCommunitiesResponse | ErrorResponse:
     """Detect and build community summaries over the graph's entities.
 
@@ -895,6 +903,7 @@ async def build_communities(
         group_ids: Optional group ID, or list of group IDs, to build communities for.
             Falls back to the default group when omitted. Pass an explicit list to scope
             community detection across multiple graphs.
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -944,6 +953,7 @@ async def add_triplet(
     group_id: str | None = None,
     source_node_uuid: str | None = None,
     target_node_uuid: str | None = None,
+    codemode: bool = False,
 ) -> TripletResponse | ErrorResponse:
     """Directly add a single fact triplet (source entity -> fact -> target entity).
 
@@ -961,6 +971,7 @@ async def add_triplet(
             generated when omitted.
         target_node_uuid: Optional UUID to reuse an existing target entity. A new UUID is
             generated when omitted.
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -1012,6 +1023,7 @@ async def add_triplet(
 @mcp.tool()
 async def get_episode_entities(
     episode_uuids: list[str],
+    codemode: bool = False,
 ) -> EpisodeEntitiesResponse | ErrorResponse:
     """Get the entities (nodes) and facts (edges) created by specific episodes.
 
@@ -1020,6 +1032,7 @@ async def get_episode_entities(
 
     Args:
         episode_uuids: List of episode UUIDs to look up provenance for
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -1048,12 +1061,14 @@ async def get_episode_entities(
 @mcp.tool()
 async def clear_graph(
     group_ids: str | list[str] | None = None,
+    codemode: bool = False,
 ) -> SuccessResponse | ErrorResponse:
     """Clear all data from the graph for specified group IDs.
 
     Args:
         group_ids: Optional group ID, or list of group IDs, to clear (a single string is
             accepted). If not provided, clears the default group.
+        codemode: Reserved. Always False. Accepts stray client args silently.
     """
     global graphiti_service
 
@@ -1089,8 +1104,14 @@ async def clear_graph(
 
 
 @mcp.tool()
-async def get_status() -> StatusResponse:
-    """Get the status of the Graphiti MCP server and database connection."""
+async def get_status(
+    codemode: bool = False,
+) -> StatusResponse:
+    """Get the status of the Graphiti MCP server and database connection.
+
+    Args:
+        codemode: Reserved. Always False. Accepts stray client args silently.
+    """
     global graphiti_service
 
     if graphiti_service is None:
