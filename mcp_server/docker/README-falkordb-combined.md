@@ -22,7 +22,7 @@ Both services are managed by a startup script that launches FalkorDB as a daemon
 OPENAI_API_KEY=your_openai_api_key
 
 # Optional
-GRAPHITI_GROUP_ID=main
+GRAPHITI_GROUP_ID=default
 SEMAPHORE_LIMIT=10
 FALKORDB_PASSWORD=
 ```
@@ -35,8 +35,8 @@ docker compose -f docker/docker-compose-falkordb-combined.yml up
 ```
 
 3. Access the services:
-   - MCP Server: http://localhost:8000/mcp/
-   - FalkorDB Web UI: http://localhost:3000
+   - MCP Server: <http://localhost:8000/mcp/>
+   - FalkorDB Web UI: <http://localhost:3000>
    - FalkorDB (Redis): localhost:6379
 
 ### Using Docker Run
@@ -47,7 +47,7 @@ docker run -d \
   -p 3000:3000 \
   -p 8000:8000 \
   -e OPENAI_API_KEY=your_key \
-  -e GRAPHITI_GROUP_ID=main \
+  -e GRAPHITI_GROUP_ID=default \
   -v falkordb_data:/var/lib/falkordb/data \
   zepai/graphiti-falkordb:latest
 ```
@@ -84,7 +84,7 @@ All environment variables from the standard MCP server are supported:
 
 **Optional:**
 - `BROWSER`: Enable FalkorDB Browser web UI on port 3000 (default: "1", set to "0" to disable)
-- `GRAPHITI_GROUP_ID`: Namespace for graph data (default: "main")
+- `GRAPHITI_GROUP_ID`: Namespace for graph data (default: "default")
 - `SEMAPHORE_LIMIT`: Concurrency limit for episode processing (default: 10)
 - `FALKORDB_PASSWORD`: Password for FalkorDB (optional)
 - `FALKORDB_DATABASE`: FalkorDB database name (default: "default_db")
@@ -152,6 +152,7 @@ The container includes a health check that verifies:
 2. MCP server health endpoint is accessible
 
 Check health status:
+
 ```bash
 docker compose -f docker/docker-compose-falkordb-combined.yml ps
 ```
@@ -159,6 +160,7 @@ docker compose -f docker/docker-compose-falkordb-combined.yml ps
 ## Architecture
 
 ### Process Structure
+
 ```
 start-services.sh (PID 1)
 ├── redis-server (FalkorDB daemon)
@@ -169,6 +171,7 @@ start-services.sh (PID 1)
 The startup script launches FalkorDB as a background daemon, waits for it to be ready, optionally starts the FalkorDB Browser (if `BROWSER=1`), then starts the MCP server in the foreground. When the MCP server stops, the container exits.
 
 ### Directory Structure
+
 ```
 /app/mcp/                    # MCP server application
 ├── main.py
@@ -196,6 +199,7 @@ The startup script launches FalkorDB as a background daemon, waits for it to be 
 ### FalkorDB Not Starting
 
 Check container logs:
+
 ```bash
 docker compose -f docker/docker-compose-falkordb-combined.yml logs graphiti-falkordb
 ```
@@ -203,16 +207,19 @@ docker compose -f docker/docker-compose-falkordb-combined.yml logs graphiti-falk
 ### MCP Server Connection Issues
 
 1. Verify FalkorDB is running:
+
 ```bash
 docker compose -f docker/docker-compose-falkordb-combined.yml exec graphiti-falkordb redis-cli ping
 ```
 
 2. Check MCP server health:
+
 ```bash
 curl http://localhost:8000/health
 ```
 
 3. View all container logs:
+
 ```bash
 docker compose -f docker/docker-compose-falkordb-combined.yml logs -f
 ```
@@ -231,6 +238,7 @@ ports:
 ## Production Considerations
 
 1. **Resource Limits**: Add resource constraints in docker-compose:
+
 ```yaml
 deploy:
   resources:

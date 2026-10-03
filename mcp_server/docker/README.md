@@ -21,7 +21,7 @@ Create a `.env` file in this directory with your API keys:
 OPENAI_API_KEY=your-api-key-here
 
 # Optional
-GRAPHITI_GROUP_ID=main
+GRAPHITI_GROUP_ID=default
 SEMAPHORE_LIMIT=10
 
 # Database-specific variables (see database sections below)
@@ -47,24 +47,27 @@ FALKORDB_DATABASE=default_db  # Database name (default: default_db)
 #### Accessing Services
 
 - **FalkorDB (Redis):** redis://localhost:6379
-- **FalkorDB Web UI:** http://localhost:3000
-- **MCP Server:** http://localhost:8000
+- **FalkorDB Web UI:** <http://localhost:3000>
+- **MCP Server:** <http://localhost:8000>
 
 #### Data Management
 
 **Backup:**
+
 ```bash
 docker run --rm -v mcp_server_falkordb_data:/var/lib/falkordb/data -v $(pwd):/backup alpine \
   tar czf /backup/falkordb-backup.tar.gz -C /var/lib/falkordb/data .
 ```
 
 **Restore:**
+
 ```bash
 docker run --rm -v mcp_server_falkordb_data:/var/lib/falkordb/data -v $(pwd):/backup alpine \
   tar xzf /backup/falkordb-backup.tar.gz -C /var/lib/falkordb/data
 ```
 
 **Clear Data:**
+
 ```bash
 docker-compose down
 docker volume rm mcp_server_falkordb_data
@@ -98,15 +101,16 @@ USE_PARALLEL_RUNTIME=false  # Enterprise feature (default: false)
 
 #### Accessing Neo4j
 
-- **Web Interface:** http://localhost:7474
+- **Web Interface:** <http://localhost:7474>
 - **Bolt Protocol:** bolt://localhost:7687
-- **MCP Server:** http://localhost:8000
+- **MCP Server:** <http://localhost:8000>
 
 Default credentials: `neo4j` / `demodemo`
 
 #### Data Management
 
 **Backup:**
+
 ```bash
 # Backup both data and logs volumes
 docker run --rm -v docker_neo4j_data:/data -v $(pwd):/backup alpine \
@@ -116,6 +120,7 @@ docker run --rm -v docker_neo4j_logs:/logs -v $(pwd):/backup alpine \
 ```
 
 **Restore:**
+
 ```bash
 # Restore both volumes
 docker run --rm -v docker_neo4j_data:/data -v $(pwd):/backup alpine \
@@ -125,6 +130,7 @@ docker run --rm -v docker_neo4j_logs:/logs -v $(pwd):/backup alpine \
 ```
 
 **Clear Data:**
+
 ```bash
 docker-compose -f docker-compose-neo4j.yml down
 docker volume rm docker_neo4j_data docker_neo4j_logs
@@ -143,6 +149,7 @@ docker-compose -f docker-compose-neo4j.yml up
 To switch from FalkorDB to Neo4j (or vice versa):
 
 1. **Stop current setup:**
+
    ```bash
    docker-compose down  # Stop FalkorDB combined image
    # or
@@ -150,6 +157,7 @@ To switch from FalkorDB to Neo4j (or vice versa):
    ```
 
 2. **Start new database:**
+
    ```bash
    docker-compose up  # Start FalkorDB combined image
    # or
@@ -163,6 +171,7 @@ Note: Data is not automatically migrated between different database types. You'l
 ### Port Conflicts
 
 If port 8000 is already in use:
+
 ```bash
 # Find what's using the port
 lsof -i :8000
@@ -174,11 +183,13 @@ lsof -i :8000
 ### Container Won't Start
 
 1. Check logs:
+
    ```bash
    docker-compose logs graphiti-mcp
    ```
 
 2. Verify `.env` file exists and contains valid API keys:
+
    ```bash
    cat .env | grep API_KEY
    ```
@@ -203,16 +214,19 @@ lsof -i :8000
 ### Data Not Persisting
 
 1. Verify volumes are created:
+
    ```bash
    docker volume ls | grep docker_
    ```
 
 2. Check volume mounts in container:
+
    ```bash
    docker inspect graphiti-mcp | grep -A 5 Mounts
    ```
 
 3. Ensure proper shutdown:
+
    ```bash
    docker-compose down  # Not docker-compose down -v (which removes volumes)
    ```

@@ -36,7 +36,7 @@ services:
       - FALKORDB_PASSWORD=${FALKORDB_PASSWORD:-}
       - FALKORDB_DATABASE=${FALKORDB_DATABASE:-default_db}
       # Application configuration
-      - GRAPHITI_GROUP_ID=${GRAPHITI_GROUP_ID:-main}
+      - GRAPHITI_GROUP_ID=${GRAPHITI_GROUP_ID:-default}
       - SEMAPHORE_LIMIT=${SEMAPHORE_LIMIT:-10}
       - CONFIG_PATH=/app/mcp/config/config.yaml
     volumes:

@@ -102,7 +102,7 @@ database:
       use_parallel_runtime: ${USE_PARALLEL_RUNTIME:false}
 
 graphiti:
-  group_id: ${GRAPHITI_GROUP_ID:main}
+  group_id: ${GRAPHITI_GROUP_ID:default}
   episode_id_prefix: ${EPISODE_ID_PREFIX:}
   user_id: ${USER_ID:mcp_user}
   entity_types:
