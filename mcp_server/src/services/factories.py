@@ -8,7 +8,14 @@ from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.llm_client import LLMClient, OpenAIClient
 from graphiti_core.llm_client.config import LLMConfig as GraphitiLLMConfig
-from graphiti_core.llm_client.litellm_client import LiteLLMClient
+
+# Shim for upstream graphiti-core: OpenAIGenericClient → LiteLLMClient
+try:
+    from graphiti_core.llm_client.litellm_client import LiteLLMClient
+except ImportError:
+    from graphiti_core.llm_client.openai_generic_client import (
+        OpenAIGenericClient as LiteLLMClient,  # noqa: F401
+    )
 
 if TYPE_CHECKING:
     from graphiti_core.cross_encoder import CrossEncoderClient
@@ -84,7 +91,11 @@ try:
 
     HAS_OPENAI_GENERIC = True
 except ImportError:
-    HAS_OPENAI_GENERIC = False
+    from graphiti_core.llm_client.openai_generic_client import (
+        OpenAIGenericClient as LiteLLMClient,  # noqa: F401
+    )
+
+    HAS_OPENAI_GENERIC = True
 
 
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
