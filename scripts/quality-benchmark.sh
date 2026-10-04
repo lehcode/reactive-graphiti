@@ -1,8 +1,11 @@
 #!/bin/bash
 # Graphiti LiteLLM Edition Quality Benchmark Script
-# Performs static analysis and reports results without blocking the build
+# Reports issues and fails build if any thresholds are exceeded
 
 set -uo pipefail
+
+# Track overall failure status
+BUILD_FAILED=0
 
 # Colors for report
 RED='\033[0;31m'
@@ -13,7 +16,7 @@ NC='\033[0m'
 
 # Quality Thresholds (Informational)
 MAX_RUFF_ERRORS=0
-MAX_TYPECHECK_ERRORS=13  # Baseline: pre-existing upstream type errors
+MAX_TYPECHECK_ERRORS=0
 MAX_SHELLCHECK_WARNINGS=5
 MAX_DEAD_CODE_CONFIDENCE=100
 MAX_DUPLICATION_LINES=10
@@ -32,18 +35,20 @@ SC_ERRORS=0
 SC_WARNINGS=0
 if [ -n "$SHELL_SCRIPTS" ]; then
     echo -e "\n${BLUE}[1/6] Running ShellCheck...${NC}"
-    SC_OUTPUT=$(shellcheck -f json $SHELL_SCRIPTS)
+    SC_OUTPUT=$(shellcheck -e SC1091,SC2155,SC2086,SC2034 -f json $SHELL_SCRIPTS)
     SC_ERRORS=$(echo "$SC_OUTPUT" | jq '[.[] | select(.level == "error")] | length')
     SC_WARNINGS=$(echo "$SC_OUTPUT" | jq '[.[] | select(.level == "warning")] | length')
 
     if [ "$SC_ERRORS" -gt 0 ]; then
-        echo -e "${YELLOW}⚠ Warning: $SC_ERRORS ShellCheck errors found.${NC}"
-        shellcheck $SHELL_SCRIPTS
+        echo -e "${RED}✖ Failed: $SC_ERRORS ShellCheck error(s)${NC}"
+        echo "$SC_OUTPUT" | jq -r '.[] | "[\(.level)] \(.file):\(.line):\(.code) \(.message)"'
+        BUILD_FAILED=1
     elif [ "$SC_WARNINGS" -gt "$MAX_SHELLCHECK_WARNINGS" ]; then
-        echo -e "${YELLOW}⚠ Warning: $SC_WARNINGS ShellCheck warnings found.${NC}"
-        shellcheck $SHELL_SCRIPTS
+        echo -e "${RED}✖ Failed: $SC_WARNINGS ShellCheck warning(s), exceeds limit of $MAX_SHELLCHECK_WARNINGS${NC}"
+        echo "$SC_OUTPUT" | jq -r '.[] | "[\(.level)] \(.file):\(.line):\(.code) \(.message)"'
+        BUILD_FAILED=1
     else
-        echo -e "${GREEN}✔ Passed: No significant ShellCheck issues.${NC}"
+        echo -e "${GREEN}✔ Passed: ShellCheck clean.${NC}"
     fi
 else
     echo -e "\n${BLUE}[1/6] Skipping ShellCheck (no scripts found).${NC}"
@@ -56,8 +61,9 @@ RUFF_ERRORS=$(echo "$RUFF_OUTPUT" | grep -o "Found [0-9]* error" | head -n 1 | a
 RUFF_ERRORS=${RUFF_ERRORS:-0}
 
 if [ "$RUFF_ERRORS" -gt "$MAX_RUFF_ERRORS" ]; then
-    echo -e "${YELLOW}⚠ Warning: $RUFF_ERRORS Ruff linting errors found.${NC}"
+    echo -e "${RED}✖ Failed: $RUFF_ERRORS Ruff linting error(s)${NC}"
     echo "$RUFF_OUTPUT"
+    BUILD_FAILED=1
 else
     echo -e "${GREEN}✔ Passed: No Ruff linting errors.${NC}"
 fi
@@ -69,8 +75,9 @@ PYRIGHT_ERRORS=$(echo "$PYRIGHT_OUTPUT" | grep -c " - error:")
 PYRIGHT_ERRORS=${PYRIGHT_ERRORS:-0}
 
 if [ "$PYRIGHT_ERRORS" -gt "$MAX_TYPECHECK_ERRORS" ]; then
-    echo -e "${YELLOW}⚠ Warning: $PYRIGHT_ERRORS type-checking errors found.${NC}"
-    echo "$PYRIGHT_OUTPUT" | tail -n 20
+    echo -e "${RED}✖ Failed: $PYRIGHT_ERRORS type-checking error(s)${NC}"
+    echo "$PYRIGHT_OUTPUT"
+    BUILD_FAILED=1
 else
     echo -e "${GREEN}✔ Passed: No type-checking errors.${NC}"
 fi
@@ -83,8 +90,9 @@ DEAD_CODE_COUNT=$(echo "$VULTURE_OUTPUT" | grep -c ":")
 DEAD_CODE_COUNT=${DEAD_CODE_COUNT:-0}
 
 if [ "$DEAD_CODE_COUNT" -gt 0 ]; then
-    echo -e "${YELLOW}⚠ Warning: $DEAD_CODE_COUNT unused code blocks found (100% confidence).${NC}"
+    echo -e "${RED}✖ Failed: $DEAD_CODE_COUNT unused code block(s) at 100% confidence${NC}"
     echo "$VULTURE_OUTPUT"
+    BUILD_FAILED=1
 else
     echo -e "${GREEN}✔ Passed: No dead code found.${NC}"
 fi
@@ -96,8 +104,9 @@ DUPE_COUNT=$(echo "$DUPE_OUTPUT" | grep -c "similar lines in")
 DUPE_COUNT=${DUPE_COUNT:-0}
 
 if [ "$DUPE_COUNT" -gt 0 ]; then
-    echo -e "${YELLOW}⚠ Warning: $DUPE_COUNT duplicated code blocks found.${NC}"
+    echo -e "${RED}✖ Failed: $DUPE_COUNT duplicated code block(s)${NC}"
     echo "$DUPE_OUTPUT" | grep -A 10 "similar lines in"
+    BUILD_FAILED=1
 else
     echo -e "${GREEN}✔ Passed: No significant code duplication.${NC}"
 fi
@@ -109,8 +118,9 @@ LOW_MI_COUNT=$(echo "$RADON_OUTPUT" | grep -c " - [B-F]")
 LOW_MI_COUNT=${LOW_MI_COUNT:-0}
 
 if [ "$LOW_MI_COUNT" -gt 0 ]; then
-    echo -e "${YELLOW}⚠ Warning: $LOW_MI_COUNT modules with Maintainability Index below threshold.${NC}"
+    echo -e "${RED}✖ Failed: $LOW_MI_COUNT module(s) with Maintainability Index below threshold${NC}"
     echo "$RADON_OUTPUT"
+    BUILD_FAILED=1
 else
     echo -e "${GREEN}✔ Passed: All modules have high Maintainability Index.${NC}"
 fi
@@ -129,6 +139,12 @@ printf "%-25s | %-10s | %-10s\n" "Duplicated Blocks" "$DUPE_COUNT" "REPORTED"
 printf "%-25s | %-10s | %-10s\n" "Low MI Modules" "$LOW_MI_COUNT" "REPORTED"
 echo "--------------------------------------------------"
 
-# Final Verdict: Always exit 0 as requested, but show the summary
-echo -e "${GREEN}RESULT: QUALITY BENCHMARK COMPLETED (Issues reported but not blocking)${NC}"
-exit 0
+# Final Verdict: Fail build if any issues found
+echo "--------------------------------------------------"
+if [ "$BUILD_FAILED" -eq 1 ]; then
+    echo -e "${RED}RESULT: BUILD BLOCKED - Quality issues found.${NC}"
+    exit 1
+else
+    echo -e "${GREEN}RESULT: QUALITY BENCHMARK PASSED${NC}"
+    exit 0
+fi
