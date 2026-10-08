@@ -101,9 +101,9 @@ COPY mcp_server/src/ ./src/
 COPY mcp_server/config/ ./config/
 
 # ── Layer D: Record version ─────────────────────────────────────────────────
-# Write fork version to the image metadata file.
+# Write fork version (from the core pyproject.toml) to the image metadata file.
 RUN set -eu; \
-    FORK_VERSION=$($VENV_PYTHON -c "import graphiti_core; print(graphiti_core.__version__)" 2>/dev/null || cat /app/core/pyproject.toml | grep '^version' | head -1 | cut -d'=' -f2 | tr -d ' '); \
+    FORK_VERSION=$(grep -m1 '^version' /app/core/pyproject.toml | cut -d'"' -f2); \
     echo "fork-${FORK_VERSION}" > /app/mcp/.graphiti-core-version
 
 # Create log directory
