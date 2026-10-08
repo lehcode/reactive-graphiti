@@ -1,0 +1,28 @@
+# Per-Dockerfile ignore for Dockerfile.fork
+# Applies only to this Dockerfile's build context (repo-root).
+# Excludes everything the Dockerfile needs:
+#   README.md, LICENSE, pyproject.toml
+#   graphiti_core/
+#   mcp_server/{pyproject.toml, uv.lock, main.py, src/, config/}
+.git
+**/.venv
+**/__pycache__
+**/*.pyc
+.ruff_cache
+.pytest_cache
+tests
+mcp_server/tests
+examples
+images
+server
+*.log
+benchmark*
+.claude
+.atl
+odd
+openspec
+spec
+signatures
+node_modules
+.env
+.env.*

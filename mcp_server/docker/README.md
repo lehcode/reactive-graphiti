@@ -144,6 +144,43 @@ docker-compose -f docker-compose-neo4j.yml up
 - Page cache is set to 512MB
 - Enterprise features like parallel runtime require a license
 
+### Fork-Core Image (Dockerfile.fork)
+
+**File:** `Dockerfile.fork`
+
+This image builds on the **fork's graphiti-core** instead of the PyPI release.
+Use it when your MCP server needs changes from the fork that haven't been published to PyPI yet.
+
+#### When to use
+
+- You have custom changes to `graphiti_core/` that are not yet upstream.
+- You need the `PREVIOUS_EPISODE_LIMIT` and `PREVIOUS_EPISODE_MAX_CHARS` environment variables
+  that are specific to the fork and prevent context-window overflow on small models.
+
+#### Build command
+
+```bash
+docker build -f mcp_server/docker/Dockerfile.fork .
+```
+
+The build context is the repository root (not `mcp_server/`).
+The resulting image overwrites the PyPI `graphiti-core` with the fork version.
+
+#### Environment variables
+
+The fork image supports these additional variables that bound prompt context:
+
+- `PREVIOUS_EPISODE_LIMIT` (default `10`): maximum number of previous episodes injected
+  as prompt context during extraction
+- `PREVIOUS_EPISODE_MAX_CHARS` (default `0`, disabled): per-episode content truncation
+  cap for prompt context
+
+#### Notes
+
+- The image uses the same `CMD` as standalone: `uv run --no-sync main.py`
+- Docker Compose overrides the CMD with `uv run --no-sync python main.py`
+- See `Dockerfile.fork.dockerignore` (applies only to this Dockerfile)
+
 ## Switching Between Databases
 
 To switch from FalkorDB to Neo4j (or vice versa):

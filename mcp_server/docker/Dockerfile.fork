@@ -1,0 +1,133 @@
+# syntax=docker/dockerfile:1
+# Fork-core Graphiti MCP Server Image
+# This image runs only the MCP server and connects to an external database (Neo4j or FalkorDB).
+# It builds on the fork's graphiti-core, overwriting the PyPI graphiti-core installed by
+# mcp_server/pyproject.toml.
+#
+# Build:
+#   docker build -f mcp_server/docker/Dockerfile.fork .
+
+FROM python:3.11-slim-bookworm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for Python package management
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+
+# Add uv to PATH
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install Socket Firewall (sfw) for dependency fetches when SOCKET_API_KEY is
+# provided as a BuildKit secret. Community builds without the secret fall back
+# to direct installs.
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) SFW_ARCH=x86_64 ;; \
+      arm64) SFW_ARCH=arm64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 --proto '=https' --tlsv1.2 \
+      "https://github.com/SocketDev/firewall-release/releases/latest/download/sfw-linux-${SFW_ARCH}" \
+      -o /usr/local/bin/sfw; \
+    chmod +x /usr/local/bin/sfw
+
+# Configure uv for optimal Docker usage
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    MCP_SERVER_HOST="0.0.0.0" \
+    PYTHONUNBUFFERED=1
+
+# Set up MCP server directory
+WORKDIR /app/mcp
+
+# Accept graphiti-core version as build argument
+ARG GRAPHITI_CORE_VERSION
+ARG SOCKET_FIREWALL_ENABLED=false
+ARG SOCKET_SCAN_ID=
+
+# ── Layer A: Install MCP server dependencies (PyPI graphiti-core) ────────────
+# Copy project files for dependency installation
+COPY mcp_server/pyproject.toml mcp_server/uv.lock ./
+
+# Install Python dependencies using repo's own pyproject.toml + uv.lock
+# Include optional provider extras so the image matches the providers
+# advertised by the MCP server configuration and docs.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=secret,id=socket_api_key \
+    set -eu; \
+    export SFW_TELEMETRY_DISABLED=true; \
+    export SFW_CUSTOM_REGISTRIES="wrap:storage.googleapis.com,wrap:classic.yarnpkg.com,wrap:files.pythonhosted.org"; \
+    if [ "$SOCKET_FIREWALL_ENABLED" = "true" ]; then \
+      if [ ! -s /run/secrets/socket_api_key ]; then \
+        echo "ERROR: SOCKET_FIREWALL_ENABLED=true but socket_api_key is missing" >&2; \
+        exit 1; \
+      fi; \
+      export SOCKET_API_KEY="$(cat /run/secrets/socket_api_key)"; \
+      export UV_NO_CACHE=1; \
+      echo "Socket Firewall enforced (scan id: ${SOCKET_SCAN_ID})"; \
+      UV_CMD="sfw uv"; \
+    else \
+      echo "socket_api_key absent; installing without Socket Firewall"; \
+      UV_CMD="uv"; \
+    fi; \
+    $UV_CMD sync --no-group dev --extra providers --extra azure
+
+# ── Layer B: Overwrite with fork graphiti-core ───────────────────────────────
+# Copy the fork's core package into /app/core and pip-install it on top of
+# the PyPI graphiti-core that was just installed.
+COPY pyproject.toml README.md LICENSE /app/core/
+COPY graphiti_core/ /app/core/graphiti_core/
+
+# Install fork graphiti-core over the PyPI one (no deps — already installed)
+RUN set -eu; \
+    VENV_PYTHON="/app/mcp/.venv/bin/python"; \
+    if [ "$SOCKET_FIREWALL_ENABLED" = "true" ]; then \
+      export SOCKET_API_KEY="$(cat /run/secrets/socket_api_key)"; \
+      uv pip install --no-deps --reinstall --python "$VENV_PYTHON" /app/core; \
+    else \
+      uv pip install --no-deps --reinstall --python "$VENV_PYTHON" /app/core; \
+    fi
+
+# ── Layer C: Copy MCP server application code ────────────────────────────────
+COPY mcp_server/main.py ./
+COPY mcp_server/src/ ./src/
+COPY mcp_server/config/ ./config/
+
+# ── Layer D: Record version ─────────────────────────────────────────────────
+# Write fork version to the image metadata file.
+RUN set -eu; \
+    FORK_VERSION=$($VENV_PYTHON -c "import graphiti_core; print(graphiti_core.__version__)" 2>/dev/null || cat /app/core/pyproject.toml | grep '^version' | head -1 | cut -d'=' -f2 | tr -d ' '); \
+    echo "fork-${FORK_VERSION}" > /app/mcp/.graphiti-core-version
+
+# Create log directory
+RUN mkdir -p /var/log/graphiti
+
+# Add Docker labels with version information
+ARG MCP_SERVER_VERSION
+ARG BUILD_DATE
+ARG VCS_REF
+LABEL org.opencontainers.image.title="Graphiti MCP Server (Fork-Core)" \
+      org.opencontainers.image.description="Graphiti MCP server built on the fork's graphiti-core" \
+      org.opencontainers.image.version="${MCP_SERVER_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.vendor="Zep AI" \
+      org.opencontainers.image.source="https://github.com/zep-ai/graphiti" \
+      graphiti.core.version="${GRAPHITI_CORE_VERSION}"
+
+# Expose MCP server port
+EXPOSE 8000
+
+# Health check - verify MCP server is responding
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the MCP server (no re-sync; deps are baked in)
+CMD ["uv", "run", "--no-sync", "main.py"]
