@@ -160,28 +160,61 @@ async def edge_fulltext_search(
             return [get_entity_edge_from_record(record, driver.provider) for record in records]
         return []
 
+    if driver.provider == GraphProvider.KUZU:
+        # Kuzu: `e` is a RelatesToNode_ node (intermediate node for relationships).
+        # Its `attributes` is a stored column, so direct reference works.
+        query = (
+            get_relationships_query('edge_name_and_fact', limit, driver.provider)
+            + match_query
+            + filter_query
+            + """
+            RETURN
+                e.uuid AS uuid,
+                e.group_id AS group_id,
+                n.uuid AS source_node_uuid,
+                m.uuid AS target_node_uuid,
+                e.created_at AS created_at,
+                e.name AS name,
+                e.fact AS fact,
+                e.episodes AS episodes,
+                e.expired_at AS expired_at,
+                e.valid_at AS valid_at,
+                e.invalid_at AS invalid_at,
+                e.attributes AS attributes,
+                score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+        )
+    else:
+        # Neo4j / FalkorDB: `e` is a RELATES_TO relationship.
+        # `e.attributes` is NULL — use `properties(e)` to get all relationship properties.
+        query = (
+            get_relationships_query('edge_name_and_fact', limit, driver.provider)
+            + match_query
+            + filter_query
+            + """
+            RETURN
+                e.uuid AS uuid,
+                e.group_id AS group_id,
+                n.uuid AS source_node_uuid,
+                m.uuid AS target_node_uuid,
+                e.created_at AS created_at,
+                e.name AS name,
+                e.fact AS fact,
+                e.episodes AS episodes,
+                e.expired_at AS expired_at,
+                e.valid_at AS valid_at,
+                e.invalid_at AS invalid_at,
+                properties(e) AS attributes,
+                score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+        )
+
     records, _, _ = await driver.execute_query(
-        get_relationships_query('edge_name_and_fact', limit, driver.provider)
-        + match_query
-        + filter_query
-        + """
-        RETURN
-            e.uuid AS uuid,
-            e.group_id AS group_id,
-            n.uuid AS source_node_uuid,
-            m.uuid AS target_node_uuid,
-            e.created_at AS created_at,
-            e.name AS name,
-            e.fact AS fact,
-            e.episodes AS episodes,
-            e.expired_at AS expired_at,
-            e.valid_at AS valid_at,
-            e.invalid_at AS invalid_at,
-            e.attributes AS attributes,
-            score
-        ORDER BY score DESC
-        LIMIT $limit
-        """,
+        query,
         query=fuzzy_query,
         limit=limit,
         routing_='r',
@@ -262,25 +295,55 @@ async def node_fulltext_search(
             return [get_entity_node_from_record(record, driver.provider) for record in records]
         return []
 
+    if driver.provider == GraphProvider.KUZU:
+        # Kuzu: the fulltext CALL yields a RelatesToNode_ node aliased to `node`.
+        # Its `attributes` is a stored column, so direct reference works.
+        query = (
+            get_nodes_query('node_name_and_summary', '$query', limit, driver.provider)
+            + """
+            WITH node AS n, score
+            """
+            + filter_query
+            + """
+            RETURN
+                n.uuid AS uuid,
+                n.group_id AS group_id,
+                n.name AS name,
+                n.summary AS summary,
+                n.created_at AS created_at,
+                n.labels AS labels,
+                n.attributes AS attributes,
+                score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+        )
+    else:
+        # Neo4j / FalkorDB: the fulltext CALL yields an Entity node aliased to `node`.
+        # `node.attributes` may be NULL in some providers — use `properties(node)`.
+        query = (
+            get_nodes_query('node_name_and_summary', '$query', limit, driver.provider)
+            + """
+            WITH node AS n, score
+            """
+            + filter_query
+            + """
+            RETURN
+                n.uuid AS uuid,
+                n.group_id AS group_id,
+                n.name AS name,
+                n.summary AS summary,
+                n.created_at AS created_at,
+                labels(n) AS labels,
+                properties(n) AS attributes,
+                score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+        )
+
     records, _, _ = await driver.execute_query(
-        get_nodes_query('node_name_and_summary', '$query', limit, driver.provider)
-        + """
-        WITH node AS n, score
-        """
-        + filter_query
-        + """
-        RETURN
-            n.uuid AS uuid,
-            n.group_id AS group_id,
-            n.name AS name,
-            n.summary AS summary,
-            n.created_at AS created_at,
-            n.labels AS labels,
-            n.attributes AS attributes,
-            score
-        ORDER BY score DESC
-        LIMIT $limit
-        """,
+        query,
         query=fuzzy_query,
         limit=limit,
         routing_='r',
