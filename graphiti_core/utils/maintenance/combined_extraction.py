@@ -33,7 +33,10 @@ from graphiti_core.utils.maintenance.node_operations import (
     _build_entity_types_context,
     _collapse_exact_duplicate_extracted_nodes,
 )
-from graphiti_core.utils.text_utils import concatenate_episodes
+from graphiti_core.utils.text_utils import (
+    build_previous_episodes_context,
+    concatenate_episodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,13 +115,7 @@ async def extract_nodes_and_edges(
     # Build context for the combined prompt
     context = {
         'episode_content': concatenate_episodes(episodes),
-        'previous_episodes': [
-            {
-                'content': ep.content,
-                'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-            }
-            for ep in previous_episodes
-        ],
+        'previous_episodes': build_previous_episodes_context(previous_episodes),
         'custom_extraction_instructions': custom_extraction_instructions or '',
         'entity_types': entity_types_context,
         'edge_types': edge_types_context,

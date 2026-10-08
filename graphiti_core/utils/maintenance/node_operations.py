@@ -54,6 +54,7 @@ from graphiti_core.utils.maintenance.dedup_helpers import (
 )
 from graphiti_core.utils.text_utils import (
     MAX_SUMMARY_CHARS,
+    build_previous_episodes_context,
     concatenate_episodes,
     truncate_at_sentence,
 )
@@ -116,13 +117,7 @@ async def extract_nodes(
     context = {
         'episode_content': concatenate_episodes(episodes),
         'episode_timestamp': primary_episode.valid_at.isoformat(),
-        'previous_episodes': [
-            {
-                'content': ep.content,
-                'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-            }
-            for ep in previous_episodes
-        ],
+        'previous_episodes': build_previous_episodes_context(previous_episodes),
         'custom_extraction_instructions': (custom_extraction_instructions or '')
         + episode_attribution,
         'entity_types': entity_types_context,
@@ -553,13 +548,7 @@ async def _resolve_with_llm(
         'existing_nodes': existing_nodes_context,
         'episode_content': episode.content if episode is not None else '',
         'previous_episodes': (
-            [
-                {
-                    'content': ep.content,
-                    'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-                }
-                for ep in previous_episodes
-            ]
+            build_previous_episodes_context(previous_episodes)
             if previous_episodes is not None
             else []
         ),
@@ -983,13 +972,7 @@ async def _process_summary_flight(
         'entities': entities_context,
         'episode_content': episode_content,
         'previous_episodes': (
-            [
-                {
-                    'content': ep.content,
-                    'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-                }
-                for ep in previous_episodes
-            ]
+            build_previous_episodes_context(previous_episodes)
             if previous_episodes is not None
             else []
         ),
@@ -1055,13 +1038,7 @@ def _build_episode_context(
         'node': node_data,
         'episode_content': episode_content,
         'previous_episodes': (
-            [
-                {
-                    'content': ep.content,
-                    'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-                }
-                for ep in previous_episodes
-            ]
+            build_previous_episodes_context(previous_episodes)
             if previous_episodes is not None
             else []
         ),

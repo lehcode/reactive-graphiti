@@ -39,6 +39,14 @@ USE_PARALLEL_RUNTIME = bool(os.getenv('USE_PARALLEL_RUNTIME', False))
 SEMAPHORE_LIMIT = int(os.getenv('SEMAPHORE_LIMIT', 20))
 DEFAULT_PAGE_LIMIT = 20
 
+# Previous-episode context limits for extraction prompts
+PREVIOUS_EPISODE_LIMIT = int(
+    os.getenv('PREVIOUS_EPISODE_LIMIT', 10)
+)  # How many previous episodes add_episode retrieves as prompt context
+PREVIOUS_EPISODE_MAX_CHARS = int(
+    os.getenv('PREVIOUS_EPISODE_MAX_CHARS', 0)
+)  # Per-episode content cap for prompt context; 0 disables truncation
+
 # Content chunking configuration for entity extraction
 # Density-based chunking: only chunk high-density content (many entities per token)
 # This targets the failure case (large entity-dense inputs) while preserving

@@ -15,7 +15,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS, truncate_at_sentence
+from datetime import datetime
+
+from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.utils.text_utils import (
+    MAX_SUMMARY_CHARS,
+    build_previous_episodes_context,
+    truncate_at_sentence,
+)
 
 
 def test_truncate_at_sentence_short_text():
@@ -105,3 +112,66 @@ def test_truncate_at_sentence_realistic_summary():
     assert result.endswith('.')
     # Should include at least the first sentence
     assert 'John is a software engineer' in result
+
+
+def test_build_previous_episodes_context_empty():
+    """Test with empty input."""
+    result = build_previous_episodes_context([])
+    assert result == []
+
+
+def test_build_previous_episodes_context_single():
+    """Test with a single episode — same dict shape as inline builders."""
+    ep = EpisodicNode(
+        name='test episode',
+        group_id='',
+        labels=[],
+        source=EpisodeType.message,
+        source_description='test',
+        content='This is episode content.',
+        valid_at=datetime(2024, 1, 1, 12, 0, 0),
+        entity_edges=[],
+    )
+    result = build_previous_episodes_context([ep])
+    assert len(result) == 1
+    assert result[0]['content'] == 'This is episode content.'
+    assert result[0]['timestamp'] == '2024-01-01T12:00:00'
+
+
+def test_build_previous_episodes_context_no_truncation():
+    """Test that no truncation happens when PREVIOUS_EPISODE_MAX_CHARS is 0 (default)."""
+    content = 'A' * 5000
+    ep = EpisodicNode(
+        name='test',
+        group_id='',
+        labels=[],
+        source=EpisodeType.message,
+        source_description='test',
+        content=content,
+        valid_at=datetime(2024, 1, 1),
+        entity_edges=[],
+    )
+    result = build_previous_episodes_context([ep])
+    assert result[0]['content'] == content
+
+
+def test_build_previous_episodes_context_truncation(monkeypatch):
+    """Test truncation is applied when PREVIOUS_EPISODE_MAX_CHARS > 0."""
+    from graphiti_core import helpers
+
+    monkeypatch.setattr(helpers, 'PREVIOUS_EPISODE_MAX_CHARS', 50)
+    content = 'First sentence. Second sentence. Third sentence. Fourth sentence.'
+    ep = EpisodicNode(
+        name='test',
+        group_id='',
+        labels=[],
+        source=EpisodeType.message,
+        source_description='test',
+        content=content,
+        valid_at=datetime(2024, 1, 1),
+        entity_edges=[],
+    )
+    result = build_previous_episodes_context([ep])
+    assert len(result[0]['content']) <= 50
+    assert result[0]['content'].endswith('.')
+    assert result[0]['timestamp'] == '2024-01-01T00:00:00'

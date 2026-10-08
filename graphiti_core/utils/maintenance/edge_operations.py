@@ -48,7 +48,10 @@ from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import ensure_utc, utc_now
 from graphiti_core.utils.maintenance.attribute_utils import apply_capped_attributes
 from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exact
-from graphiti_core.utils.text_utils import concatenate_episodes
+from graphiti_core.utils.text_utils import (
+    build_previous_episodes_context,
+    concatenate_episodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,13 +193,7 @@ async def extract_edges(
     context = {
         'episode_content': concatenate_episodes(episodes),
         'nodes': [{'name': node.name, 'entity_types': node.labels} for node in nodes],
-        'previous_episodes': [
-            {
-                'content': ep.content,
-                'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-            }
-            for ep in previous_episodes
-        ],
+        'previous_episodes': build_previous_episodes_context(previous_episodes),
         'reference_time': latest_episode.valid_at,
         'edge_types': edge_types_context,
         'custom_extraction_instructions': (custom_extraction_instructions or '')

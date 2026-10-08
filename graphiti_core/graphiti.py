@@ -42,6 +42,7 @@ from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
 from graphiti_core.graphiti_types import GraphitiClients, generate_prompt_response
 from graphiti_core.helpers import (
+    PREVIOUS_EPISODE_LIMIT,
     get_default_group_id,
     semaphore_gather,
     validate_excluded_entity_types,
@@ -74,7 +75,6 @@ from graphiti_core.search.search_config_recipes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import (
-    RELEVANT_SCHEMA_LIMIT,
     get_mentioned_nodes,
 )
 from graphiti_core.telemetry import capture_event
@@ -1198,7 +1198,7 @@ class Graphiti:
                 previous_episodes = (
                     await self.retrieve_episodes(
                         reference_time,
-                        last_n=RELEVANT_SCHEMA_LIMIT,
+                        last_n=PREVIOUS_EPISODE_LIMIT,
                         group_ids=[group_id],
                         source=source,
                         driver=driver,

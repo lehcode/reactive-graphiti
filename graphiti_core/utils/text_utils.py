@@ -60,6 +60,27 @@ def truncate_at_sentence(text: str, max_chars: int) -> str:
     return truncated.rstrip()
 
 
+def build_previous_episodes_context(
+    episodes: list[EpisodicNode],
+) -> list[dict[str, str | None]]:
+    """Build previous episodes context for extraction prompts.
+
+    Returns a list of dicts with 'content' and 'timestamp' keys.
+    Truncates episode content when ``PREVIOUS_EPISODE_MAX_CHARS`` > 0.
+    """
+    from graphiti_core import helpers
+
+    max_chars = helpers.PREVIOUS_EPISODE_MAX_CHARS
+    result: list[dict[str, str | None]] = []
+    for ep in episodes:
+        ts = ep.valid_at.isoformat() if ep.valid_at else None
+        content = ep.content
+        if max_chars > 0:
+            content = truncate_at_sentence(content, max_chars)
+        result.append({'content': content, 'timestamp': ts})
+    return result
+
+
 def concatenate_episodes(episodes: list[EpisodicNode]) -> str:
     """Concatenate episode contents with enumerated headers.
 
