@@ -660,3 +660,33 @@ class TestTruncateTypeDescription:
     def test_preserves_decimals(self):
         doc = 'Requires version 2.0 or higher. Must be certified.'
         assert _truncate_type_description(doc) == doc
+
+
+class TestExtractNodesBudgetPrompt:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'source,prompt_attr',
+        [
+            (EpisodeType.message, 'extract_message'),
+            (EpisodeType.text, 'extract_text'),
+            (EpisodeType.json, 'extract_json'),
+        ],
+    )
+    async def test_budget_measured_on_sent_prompt(self, monkeypatch, source, prompt_attr):
+        """The previous-episode budget is measured on the prompt the extraction call sends."""
+        from graphiti_core.prompts import prompt_library
+        from graphiti_core.utils.maintenance import node_operations
+
+        clients, llm_generate = _make_clients()
+        llm_generate.return_value = {'extracted_entities': []}
+        builders = []
+
+        def spy(llm_client, prompt_builder, context, response_model=None):
+            builders.append(prompt_builder)
+            return None
+
+        monkeypatch.setattr(node_operations, 'remaining_budget_for_previous_episodes', spy)
+
+        await extract_nodes(clients, _make_episode(source=source), previous_episodes=[])
+
+        assert builders == [getattr(prompt_library.extract_nodes, prompt_attr)]

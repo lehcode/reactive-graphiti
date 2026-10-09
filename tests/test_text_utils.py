@@ -15,9 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import json
 from datetime import datetime
 
 from graphiti_core.nodes import EpisodeType, EpisodicNode
+from graphiti_core.utils.content_chunking import estimate_tokens
 from graphiti_core.utils.text_utils import (
     MAX_SUMMARY_CHARS,
     build_previous_episodes_context,
@@ -175,3 +177,273 @@ def test_build_previous_episodes_context_truncation(monkeypatch):
     assert len(result[0]['content']) <= 50
     assert result[0]['content'].endswith('.')
     assert result[0]['timestamp'] == '2024-01-01T00:00:00'
+
+
+class TestBuildPreviousEpisodesContextBudget:
+    """Tests for budget-limited episode selection."""
+
+    def test_budget_none_unchanged(self):
+        """budget=None → same as before (all episodes)."""
+        eps = [
+            EpisodicNode(
+                name='ep1',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='First episode.',
+                valid_at=datetime(2024, 1, 1),
+                entity_edges=[],
+            ),
+            EpisodicNode(
+                name='ep2',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='Second episode.',
+                valid_at=datetime(2024, 1, 2),
+                entity_edges=[],
+            ),
+        ]
+        result = build_previous_episodes_context(eps, budget_tokens=None)
+        assert len(result) == 2
+
+    def test_budget_zero(self):
+        """budget=0 → empty list."""
+        ep = EpisodicNode(
+            name='ep1',
+            group_id='',
+            labels=[],
+            source=EpisodeType.message,
+            source_description='t',
+            content='content.',
+            valid_at=datetime(2024, 1, 1),
+            entity_edges=[],
+        )
+        result = build_previous_episodes_context([ep], budget_tokens=0)
+        assert result == []
+
+    def test_budget_negative(self):
+        """budget<0 → empty list."""
+        ep = EpisodicNode(
+            name='ep1',
+            group_id='',
+            labels=[],
+            source=EpisodeType.message,
+            source_description='t',
+            content='content.',
+            valid_at=datetime(2024, 1, 1),
+            entity_edges=[],
+        )
+        result = build_previous_episodes_context([ep], budget_tokens=-5)
+        assert result == []
+
+    def test_budget_tight_keeps_newest_first(self):
+        """Tight budget keeps newest episodes first."""
+        from graphiti_core.utils.content_chunking import estimate_tokens
+
+        # Create 3 episodes with distinct timestamps
+        eps = [
+            EpisodicNode(
+                name='old',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='A' * 100,
+                valid_at=datetime(2024, 1, 1),
+                entity_edges=[],
+            ),
+            EpisodicNode(
+                name='mid',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='B' * 100,
+                valid_at=datetime(2024, 6, 1),
+                entity_edges=[],
+            ),
+            EpisodicNode(
+                name='new',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='C' * 100,
+                valid_at=datetime(2024, 12, 1),
+                entity_edges=[],
+            ),
+        ]
+
+        # Budget tight enough for only the newest 2 (each ~110 tokens with overhead)
+        budget = (
+            estimate_tokens(json.dumps({'content': 'C' * 100, 'timestamp': '2024-12-01T00:00:00'}))
+            + 10
+        )
+        budget += (
+            estimate_tokens(json.dumps({'content': 'B' * 100, 'timestamp': '2024-06-01T00:00:00'}))
+            + 10
+        )
+        # Add a little more but not enough for the oldest
+        budget = int(budget) + 1
+
+        result = build_previous_episodes_context(eps, budget_tokens=budget)
+        # Should have 2 episodes (newest and mid), not oldest
+        assert len(result) == 2
+        timestamps = {ep['timestamp'] for ep in result}
+        assert '2024-12-01T00:00:00' in timestamps
+        assert '2024-06-01T00:00:00' in timestamps
+        assert '2024-01-01T00:00:00' not in timestamps
+
+    def test_chronological_output_order(self):
+        """Output is chronological despite newest-first selection."""
+        eps = [
+            EpisodicNode(
+                name='ep1',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='First.',
+                valid_at=datetime(2024, 1, 1),
+                entity_edges=[],
+            ),
+            EpisodicNode(
+                name='ep2',
+                group_id='',
+                labels=[],
+                source=EpisodeType.message,
+                source_description='t',
+                content='Second.',
+                valid_at=datetime(2024, 6, 1),
+                entity_edges=[],
+            ),
+        ]
+        # Tight budget for only 1 episode
+        budget = (
+            estimate_tokens(json.dumps({'content': 'Second.', 'timestamp': '2024-06-01T00:00:00'}))
+            + 10
+        )
+
+        result = build_previous_episodes_context(eps, budget_tokens=budget)
+        assert len(result) == 1
+        # The newest (June) should be selected
+        assert result[0]['timestamp'] == '2024-06-01T00:00:00'
+
+    def test_partial_truncation_boundary(self):
+        """When budget allows partial truncation at boundary."""
+
+        # Create a longer content (~500 tokens / 2000 chars)
+        long_content = '. '.join(
+            f'Sentence number {i} with additional descriptive words.' for i in range(500)
+        )
+        ep = EpisodicNode(
+            name='ep',
+            group_id='',
+            labels=[],
+            source=EpisodeType.message,
+            source_description='t',
+            content=long_content,
+            valid_at=datetime(2024, 1, 1),
+            entity_edges=[],
+        )
+
+        # Budget: 100 tokens (400 chars) — fits about 10 sentences after truncation
+        # (>= _PARTIAL_TRUNCATION_THRESHOLD=50)
+        budget = 100
+
+        result = build_previous_episodes_context([ep], budget_tokens=budget)
+        assert len(result) == 1
+        # Content should be truncated to fit budget
+        assert len(result[0]['content']) < len(long_content)
+        # Should respect sentence boundaries
+        assert result[0]['content'].endswith('.')
+
+    def test_max_chars_still_applied(self):
+        """PREVIOUS_EPISODE_MAX_CHARS is still the upper bound."""
+        from graphiti_core import helpers
+
+        # Create long content with sentence boundaries
+        large_content = '. '.join(f'Sentence {i} with more words.' for i in range(500))
+        ep = EpisodicNode(
+            name='ep',
+            group_id='',
+            labels=[],
+            source=EpisodeType.message,
+            source_description='t',
+            content=large_content,
+            valid_at=datetime(2024, 1, 1),
+            entity_edges=[],
+        )
+
+        # Set MAX_CHARS to something small
+        from unittest.mock import patch
+
+        with patch.object(helpers, 'PREVIOUS_EPISODE_MAX_CHARS', 100):
+            result = build_previous_episodes_context(
+                [ep],
+                budget_tokens=99999,  # huge budget
+            )
+            assert len(result) == 1
+            assert len(result[0]['content']) <= 100
+            # May end with '.' if truncated at sentence boundary, or with content
+            assert len(result[0]['content']) > 0
+
+
+class TestRemainingBudgetForPreviousEpisodes:
+    @staticmethod
+    def _client(budget):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        client.input_token_budget.return_value = budget
+        return client
+
+    def test_no_budget_returns_none(self):
+        from graphiti_core.utils.text_utils import remaining_budget_for_previous_episodes
+
+        builder_calls = []
+        result = remaining_budget_for_previous_episodes(
+            self._client(None), lambda ctx: builder_calls.append(ctx) or [], {}
+        )
+        assert result is None
+        assert builder_calls == []
+
+    def test_subtracts_rendered_prompt_and_schema(self):
+        from pydantic import BaseModel
+
+        from graphiti_core.prompts.models import Message
+        from graphiti_core.utils.text_utils import remaining_budget_for_previous_episodes
+
+        class Out(BaseModel):
+            value: str
+
+        seen = []
+
+        def builder(ctx):
+            seen.append(ctx)
+            return [
+                Message(role='system', content='s' * 400),
+                Message(role='user', content='u' * 800),
+            ]
+
+        context = {'previous_episodes': [{'content': 'x'}], 'other': 1}
+        result = remaining_budget_for_previous_episodes(
+            self._client(1000), builder, context, response_model=Out
+        )
+
+        schema_tokens = estimate_tokens(json.dumps(Out.model_json_schema()))
+        assert result == 1000 - 100 - 200 - schema_tokens
+        # Fixed cost is measured without previous episodes; caller's context is not mutated
+        assert seen[0]['previous_episodes'] == []
+        assert context['previous_episodes'] == [{'content': 'x'}]
+
+    def test_clamps_to_zero(self):
+        from graphiti_core.utils.text_utils import remaining_budget_for_previous_episodes
+
+        result = remaining_budget_for_previous_episodes(
+            self._client(10), lambda ctx: ['y' * 4000], {}
+        )
+        assert result == 0

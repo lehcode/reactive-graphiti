@@ -51,6 +51,7 @@ from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exac
 from graphiti_core.utils.text_utils import (
     build_previous_episodes_context,
     concatenate_episodes,
+    remaining_budget_for_previous_episodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,18 +188,38 @@ async def extract_edges(
             'A fact sourced from Episodes 0 and 1 should have `episode_indices: [0, 1]`.'
         )
 
-    # Prepare context for LLM
-    # Use the latest episode's timestamp as the primary reference time
+    # Build latest episode (needed for context and reference_time)
     latest_episode = max(episodes, key=lambda ep: ep.valid_at)
-    context = {
+
+    # Base context without episodes for budget estimation
+    base_context = {
         'episode_content': concatenate_episodes(episodes),
         'nodes': [{'name': node.name, 'entity_types': node.labels} for node in nodes],
-        'previous_episodes': build_previous_episodes_context(previous_episodes),
+        'previous_episodes': [],
         'reference_time': latest_episode.valid_at,
         'edge_types': edge_types_context,
         'custom_extraction_instructions': (custom_extraction_instructions or '')
         + episode_attribution,
     }
+
+    # Compute remaining budget
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client,
+        prompt_library.extract_edges.edge,
+        base_context,
+        response_model=ExtractedEdges,
+    )
+
+    # Build final context
+    context = dict(base_context)
+    context['previous_episodes'] = build_previous_episodes_context(previous_episodes, budget_tokens)
+
+    logger.debug(
+        'extract_edges: budget=%s episodes=%d/%d',
+        budget_tokens,
+        len(context['previous_episodes']),
+        len(previous_episodes),
+    )
 
     llm_response = await generate_prompt_response(
         llm_client,

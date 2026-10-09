@@ -56,6 +56,7 @@ from graphiti_core.utils.text_utils import (
     MAX_SUMMARY_CHARS,
     build_previous_episodes_context,
     concatenate_episodes,
+    remaining_budget_for_previous_episodes,
     truncate_at_sentence,
 )
 
@@ -113,16 +114,51 @@ async def extract_nodes(
             'An entity appearing in Episodes 0 and 2 should have `episode_indices: [0, 2]`.'
         )
 
-    # Build base context
-    context = {
+    # Same prompt selection as _call_extraction_llm, so the budget is measured on the prompt
+    # that is actually sent
+    if primary_episode.source == EpisodeType.message:
+        _prompt_builder = prompt_library.extract_nodes.extract_message
+    elif primary_episode.source == EpisodeType.json:
+        _prompt_builder = prompt_library.extract_nodes.extract_json
+    else:
+        _prompt_builder = prompt_library.extract_nodes.extract_text
+
+    # Build base context (without previous_episodes for budget estimation)
+    base_context = {
         'episode_content': concatenate_episodes(episodes),
         'episode_timestamp': primary_episode.valid_at.isoformat(),
-        'previous_episodes': build_previous_episodes_context(previous_episodes),
         'custom_extraction_instructions': (custom_extraction_instructions or '')
         + episode_attribution,
         'entity_types': entity_types_context,
         'source_description': primary_episode.source_description,
+        'previous_episodes': [],
     }
+
+    # Compute remaining budget for previous episodes
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client,
+        _prompt_builder,
+        base_context,
+        response_model=ExtractedEntities,
+    )
+
+    # Build final context with budget-limited episodes
+    context = dict(base_context)
+    context['previous_episodes'] = build_previous_episodes_context(previous_episodes, budget_tokens)
+
+    input_budget = llm_client.input_token_budget()
+    fixed_estimate = (
+        f'{input_budget - budget_tokens}'
+        if input_budget is not None and budget_tokens is not None
+        else 'N/A'
+    )
+    logger.debug(
+        'extract_nodes: budget=%s fixed_estimate=%s episodes=%d/%d',
+        budget_tokens,
+        fixed_estimate,
+        len(context['previous_episodes']),
+        len(previous_episodes),
+    )
 
     # Extract entities
     extracted_entities = await _extract_nodes_single(
@@ -543,16 +579,36 @@ async def _resolve_with_llm(
         i: node for i, node in enumerate(indexes.existing_nodes)
     }
 
-    context = {
+    # Base context without episodes for budget estimation
+    base_context = {
         'extracted_nodes': extracted_nodes_context,
         'existing_nodes': existing_nodes_context,
         'episode_content': episode.content if episode is not None else '',
-        'previous_episodes': (
-            build_previous_episodes_context(previous_episodes)
-            if previous_episodes is not None
-            else []
-        ),
+        'previous_episodes': [],
     }
+
+    # Compute remaining budget
+    if previous_episodes is not None:
+        budget_tokens = remaining_budget_for_previous_episodes(
+            llm_client,
+            prompt_library.dedupe_nodes.nodes,
+            base_context,
+            response_model=NodeResolutions,
+        )
+        ep_context = build_previous_episodes_context(previous_episodes, budget_tokens)
+    else:
+        budget_tokens = None
+        ep_context = []
+
+    logger.debug(
+        '_resolve_with_llm: budget=%s episodes=%d/%d',
+        budget_tokens,
+        len(ep_context),
+        len(previous_episodes) if previous_episodes is not None else 0,
+    )
+
+    context = dict(base_context)
+    context['previous_episodes'] = ep_context
 
     llm_response = await generate_prompt_response(
         llm_client,
@@ -806,6 +862,27 @@ async def _extract_entity_attributes(
         # {} here would clear attributes a previous typed pass stored on a deduplicated node.
         return dict(node.attributes or {})
 
+    # Compute remaining budget for previous episodes
+    base_ctx = _build_episode_context(
+        node_data={
+            'name': node.name,
+            'entity_types': node.labels,
+            'attributes': node.attributes,
+        },
+        episode=episode,
+        previous_episodes=None,
+    )
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client,
+        prompt_library.extract_nodes.extract_attributes,
+        base_ctx,
+        response_model=entity_type,
+    )
+    logger.debug(
+        '_extract_entity_attributes: budget=%s',
+        budget_tokens,
+    )
+
     attributes_context = _build_episode_context(
         # should not include summary
         node_data={
@@ -815,6 +892,7 @@ async def _extract_entity_attributes(
         },
         episode=episode,
         previous_episodes=previous_episodes,
+        budget_tokens=budget_tokens,
     )
 
     llm_response = await generate_prompt_response(
@@ -968,16 +1046,36 @@ async def _process_summary_flight(
     else:
         episode_content = episode.content
 
-    batch_context: dict[str, Any] = {
+    # Base context without episodes for budget estimation
+    base_batch_context: dict[str, Any] = {
         'entities': entities_context,
         'episode_content': episode_content,
-        'previous_episodes': (
-            build_previous_episodes_context(previous_episodes)
-            if previous_episodes is not None
-            else []
-        ),
+        'previous_episodes': [],
         'entity_type_descriptions': entity_type_descriptions,
     }
+
+    # Compute remaining budget
+    if previous_episodes is not None:
+        budget_tokens = remaining_budget_for_previous_episodes(
+            llm_client,
+            prompt_library.extract_nodes.extract_summaries_batch,
+            base_batch_context,
+            response_model=SummarizedEntities,
+        )
+        ep_context = build_previous_episodes_context(previous_episodes, budget_tokens)
+    else:
+        budget_tokens = None
+        ep_context = []
+
+    logger.debug(
+        '_process_summary_flight: budget=%s episodes=%d/%d',
+        budget_tokens,
+        len(ep_context),
+        len(previous_episodes) if previous_episodes is not None else 0,
+    )
+
+    batch_context = dict(base_batch_context)
+    batch_context['previous_episodes'] = ep_context
 
     # Get group_id from the first node (all nodes in a batch should have same group_id)
     group_id = nodes[0].group_id if nodes else None
@@ -1027,6 +1125,7 @@ def _build_episode_context(
     node_data: dict[str, Any],
     episode: EpisodicNode | list[EpisodicNode] | None,
     previous_episodes: list[EpisodicNode] | None,
+    budget_tokens: int | None = None,
 ) -> dict[str, Any]:
     if episode is None:
         episode_content = ''
@@ -1038,7 +1137,7 @@ def _build_episode_context(
         'node': node_data,
         'episode_content': episode_content,
         'previous_episodes': (
-            build_previous_episodes_context(previous_episodes)
+            build_previous_episodes_context(previous_episodes, budget_tokens)
             if previous_episodes is not None
             else []
         ),

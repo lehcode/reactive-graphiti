@@ -36,6 +36,7 @@ from graphiti_core.utils.maintenance.node_operations import (
 from graphiti_core.utils.text_utils import (
     build_previous_episodes_context,
     concatenate_episodes,
+    remaining_budget_for_previous_episodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,13 +114,32 @@ async def extract_nodes_and_edges(
         ]
 
     # Build context for the combined prompt
-    context = {
+    base_context = {
         'episode_content': concatenate_episodes(episodes),
-        'previous_episodes': build_previous_episodes_context(previous_episodes),
+        'previous_episodes': [],
         'custom_extraction_instructions': custom_extraction_instructions or '',
         'entity_types': entity_types_context,
         'edge_types': edge_types_context,
     }
+
+    # Compute remaining budget
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client,
+        prompt_library.extract_nodes_and_edges.extract_message,
+        base_context,
+        response_model=CombinedExtraction,
+    )
+
+    # Build final context with previous episodes
+    context = dict(base_context)
+    context['previous_episodes'] = build_previous_episodes_context(previous_episodes, budget_tokens)
+
+    logger.debug(
+        'extract_nodes_and_edges: budget=%s episodes=%d/%d',
+        budget_tokens,
+        len(context['previous_episodes']),
+        len(previous_episodes),
+    )
 
     # Single LLM call for combined extraction
     llm_response = await generate_prompt_response(
