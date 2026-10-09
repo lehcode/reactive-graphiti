@@ -283,6 +283,20 @@ class LLMClient(ABC):
 
             return response
 
+    def input_token_budget(self) -> int | None:
+        """Compute the input-token budget using the configured safety ratio.
+
+        Returns the effective budget (int(max_input_tokens * safety_ratio)) when
+        ``self.config.max_input_tokens`` is set, otherwise ``None``.  Reads the
+        safety-ratio module attribute at call time so tests can monkeypatch it.
+        """
+        max_input = getattr(self.config, 'max_input_tokens', None) if self.config else None
+        if max_input is not None:
+            from ..helpers import INPUT_TOKEN_SAFETY_RATIO
+
+            return int(max_input * INPUT_TOKEN_SAFETY_RATIO)
+        return None
+
     def _get_provider_type(self) -> str:
         """Get provider type from class name."""
         class_name = self.__class__.__name__.lower()

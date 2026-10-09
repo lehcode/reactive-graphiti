@@ -43,6 +43,7 @@ class LLMConfig:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         small_model: str | None = None,
+        max_input_tokens: int | None = None,
     ):
         """
         Initialize the LLMConfig with the provided parameters.
@@ -60,6 +61,9 @@ class LLMConfig:
 
                 small_model (str, optional): The specific LLM model to use for generating responses of simpler prompts.
                                                                 Defaults to "gpt-4.1-nano".
+
+                max_input_tokens (int, optional): Model input-token limit for budgeting.
+                                                                None = no budgeting, upstream behavior.
         """
         self.base_url = base_url
         self.api_key = api_key
@@ -67,3 +71,4 @@ class LLMConfig:
         self.small_model = small_model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.max_input_tokens = max_input_tokens

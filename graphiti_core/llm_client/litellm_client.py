@@ -257,12 +257,9 @@ class LiteLLMClient(LLMClient):
             # json.loads raise a cryptic JSONDecodeError; surface a clear error instead.
             if not result:
                 raise EmptyResponseError('LLM returned an empty response')
-            # Many OpenAI-compatible/local models wrap JSON in a ```json fence even under a
-            # structured response_format; strip it before parsing. Some also append prose
-            # after the object, so extract the first complete object rather than bare-loading.
-            parsed = self._extract_json(self._strip_code_fences(result))
 
-            # Record token usage and log prompt size (context set by generate_response)
+            # Record token usage and log prompt size (before JSON parsing so parse
+            # failures still report real prompt_tokens; context set by generate_response)
             ctx = _prompt_context.get()
             if ctx:
                 prompt_name = ctx['prompt_name']
@@ -270,12 +267,24 @@ class LiteLLMClient(LLMClient):
                 output_tokens = getattr(response.usage, 'completion_tokens', None) or 0
                 self.token_tracker.record(prompt_name, input_tokens, output_tokens)
                 est = ctx['estimate']
+                budget_str = (
+                    f' budget={ctx["budget"]}'
+                    if 'budget' in ctx and ctx.get('budget') is not None
+                    else ''
+                )
                 logger.info(
                     f'LLM prompt size: prompt={prompt_name} model={ctx["model"]} '
                     f'est_total={est["total"]} est_system={est["system"]} '
                     f'est_user={est["user"]} est_schema={est["schema"]} '
                     f'prompt_tokens={input_tokens} completion_tokens={output_tokens}'
+                    f'{budget_str}'
                 )
+
+            # Many OpenAI-compatible/local models wrap JSON in a ```json fence even under a
+            # structured response_format; strip it before parsing. Some also append prose
+            # after the object, so extract the first complete object rather than bare-loading.
+            parsed = self._extract_json(self._strip_code_fences(result))
+
             return parsed
         except openai.RateLimitError as e:
             raise RateLimitError from e
@@ -341,8 +350,24 @@ class LiteLLMClient(LLMClient):
                 'total': system_tokens + user_tokens + schema_tokens,
             }
 
+            # Check budget before sending (log WARNING but still send; LiteLLM
+            # rejects authoritatively)
+            budget = self.input_token_budget()
+            if budget is not None and estimate['total'] > budget:
+                logger.warning(
+                    f'LLM prompt over input budget: prompt={prompt_name} '
+                    f'model={model_name} est_total={estimate["total"]} '
+                    f'budget={budget} max_input_tokens='
+                    f'{self.config.max_input_tokens if self.config else None}'
+                )
+
             # Make context available to _generate_response (persists through retries)
-            ctx = {'prompt_name': prompt_name, 'estimate': estimate, 'model': model_name}
+            ctx = {
+                'prompt_name': prompt_name,
+                'estimate': estimate,
+                'model': model_name,
+                'budget': budget,
+            }
             token = _prompt_context.set(ctx)
 
             try:

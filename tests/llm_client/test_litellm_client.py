@@ -280,26 +280,69 @@ class TestLiteLLMClientTokenLogging:
 
     @pytest.mark.asyncio
     async def test_concurrency_isolation(self, client, caplog):
-        """Two asyncio.gather calls → usage recorded under correct names."""
-        mock_choice = MagicMock()
-        mock_choice.message.content = json.dumps({'ok': True})
+        """Two asyncio.gather calls → usage recorded under correct names.
 
-        mock_response = MagicMock()
-        mock_response.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
-        mock_response.choices = [mock_choice]
+        Uses separate clients sharing one token_tracker so a ContextVar leak
+        would mix usage between the two clients' prompts.
+        """
+        mock_choice_a = MagicMock()
+        mock_choice_a.message.content = json.dumps({'ok': True})
 
-        async def call(prompt_name):
-            # Each call resets the mock to return the same mock_response
-            client.client.chat.completions.create.return_value = mock_response
-            return await client.generate_response(
+        mock_response_a = MagicMock()
+        mock_response_a.usage = MagicMock(prompt_tokens=111, completion_tokens=55)
+        mock_response_a.choices = [mock_choice_a]
+
+        mock_choice_b = MagicMock()
+        mock_choice_b.message.content = json.dumps({'ok': True})
+
+        mock_response_b = MagicMock()
+        mock_response_b.usage = MagicMock(prompt_tokens=222, completion_tokens=66)
+        mock_response_b.choices = [mock_choice_b]
+
+        # Create separate client instances sharing the same token_tracker
+        mock_client_a = MagicMock()
+        mock_client_a.chat = MagicMock()
+        mock_client_a.chat.completions = MagicMock()
+        mock_client_a.chat.completions.create = AsyncMock()
+        config_a = LLMConfig(api_key='test-key')
+        client_a = LiteLLMClient(config=config_a, client=mock_client_a)
+        client_a.token_tracker = client.token_tracker
+
+        mock_client_b = MagicMock()
+        mock_client_b.chat = MagicMock()
+        mock_client_b.chat.completions = MagicMock()
+        mock_client_b.chat.completions.create = AsyncMock()
+        config_b = LLMConfig(api_key='test-key')
+        client_b = LiteLLMClient(config=config_b, client=mock_client_b)
+        client_b.token_tracker = client.token_tracker
+
+        ready_a = asyncio.Event()
+        ready_b = asyncio.Event()
+
+        async def call_a():
+            mock_client_a.chat.completions.create.return_value = mock_response_a
+            ready_a.set()
+            await ready_b.wait()
+            return await client_a.generate_response(
                 [Message(role='user', content='Hello')],
-                prompt_name=prompt_name,
+                prompt_name='prompt_a',
             )
 
-        await asyncio.gather(call('prompt_a'), call('prompt_b'))
+        async def call_b():
+            mock_client_b.chat.completions.create.return_value = mock_response_b
+            ready_b.set()
+            await ready_a.wait()
+            return await client_b.generate_response(
+                [Message(role='user', content='Hello')],
+                prompt_name='prompt_b',
+            )
+
+        await asyncio.wait_for(asyncio.gather(call_a(), call_b()), timeout=5)
 
         usage = client.token_tracker.get_usage()
         assert 'prompt_a' in usage
         assert 'prompt_b' in usage
-        assert usage['prompt_a'].total_input_tokens == 100
-        assert usage['prompt_b'].total_input_tokens == 100
+        assert usage['prompt_a'].total_input_tokens == 111
+        assert usage['prompt_a'].total_output_tokens == 55
+        assert usage['prompt_b'].total_input_tokens == 222
+        assert usage['prompt_b'].total_output_tokens == 66
