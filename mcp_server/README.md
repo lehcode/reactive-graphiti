@@ -217,6 +217,7 @@ llm:
 embedder:
   provider: "sentence_transformers" # recommended for local setup
   model: "all-MiniLM-L6-v2"
+
 ```
 
 Make sure Ollama is running locally with: `ollama serve`
@@ -597,15 +598,34 @@ For HTTP transport (default), you can use this configuration:
 
 The Graphiti MCP server exposes the following tools:
 
-- `add_episode`: Add an episode to the knowledge graph (supports text, JSON, and message formats)
-- `search_nodes`: Search the knowledge graph for relevant node summaries
-- `search_facts`: Search the knowledge graph for relevant facts (edges between entities)
-- `delete_entity_edge`: Delete an entity edge from the knowledge graph
-- `delete_episode`: Delete an episode from the knowledge graph
-- `get_entity_edge`: Get an entity edge by its UUID
-- `get_episodes`: Get the most recent episodes for a specific group
-- `clear_graph`: Clear all data from the knowledge graph and rebuild indices
-- `get_status`: Get the status of the Graphiti MCP server and Neo4j connection
+- `add_memory`: Add an episode to the knowledge graph (supports text, JSON, and message formats).
+  Supports the bi-temporal `reference_time`, `excluded_entity_types`, `custom_extraction_instructions`,
+  `previous_episode_uuids`, `update_communities`, and `saga` / `saga_previous_episode_uuid`.
+- `add_triplet`: Add a single fact (source entity -> fact -> target entity) directly, bypassing extraction.
+- `search_nodes`: Search the knowledge graph for relevant entities; supports `entity_types` and `center_node_uuid`.
+- `search_memory_facts`: Search for relevant facts (edges); supports `edge_types`, `center_node_uuid`,
+  and `valid_at` / `invalid_at` date-range filters.
+- `summarize_saga`: Generate or refresh the running summary of a saga's episodes.
+- `build_communities`: Detect entity communities and produce higher-level community summaries.
+- `get_episode_entities`: Trace provenance — the entities and facts created by specific episode UUIDs.
+  Accepts an optional `group_id`; defaults to the configured group.
+- `delete_entity_edge`: Delete an entity edge from the knowledge graph.
+  Accepts an optional `group_id`; defaults to the configured group.
+- `delete_episode`: Delete an episode and cascade-delete the entities/facts it solely created.
+  Accepts an optional `group_id`; defaults to the configured group.
+- `get_entity_edge`: Get an entity edge by its UUID. Accepts an optional `group_id`; defaults to
+  the configured group.
+- `get_episodes`: Get the most recent episodes for one or more groups (`group_ids`).
+- `clear_graph`: Clear all data from the knowledge graph for the given group(s).
+- `get_status`: Get the status of the Graphiti MCP server and database connection.
+
+On FalkorDB, each `group_id` is stored in its own graph. Pass the same `group_id` that you used with
+`add_memory` when you read, delete, or clear data for that group. Without a `group_id`, tools use the
+server's configured default group.
+
+Custom entity types and edge (fact) types — including which edge types may connect which entity types —
+can be configured under the `graphiti` section of `config/config.yaml`. See the `entity_types`,
+`edge_types`, and `edge_type_map` keys there.
 
 ## Working with JSON Data
 
