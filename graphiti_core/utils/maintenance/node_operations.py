@@ -672,7 +672,7 @@ async def _resolve_with_llm(
         }
         messages = prompt_library.dedupe_nodes.nodes(base_cost_context)
         fixed_cost = sum(
-            estimate_tokens(m.content if hasattr(m, 'content') else m) for m in messages
+            estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
         )
         fixed_cost += estimate_tokens(json.dumps(NodeResolutions.model_json_schema()))
 
