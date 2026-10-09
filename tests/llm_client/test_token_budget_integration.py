@@ -11,6 +11,12 @@ from graphiti_core.llm_client.litellm_client import LiteLLMClient
 from graphiti_core.prompts.models import Message
 
 
+@pytest.fixture(autouse=True)
+def _pin_safety_ratio(monkeypatch):
+    """Budget assertions assume the default ratio; ignore any INPUT_TOKEN_SAFETY_RATIO env."""
+    monkeypatch.setattr('graphiti_core.helpers.INPUT_TOKEN_SAFETY_RATIO', 0.8)
+
+
 class TestLLMConfigMaxInputTokens:
     """Tests for LLMConfig.max_input_tokens parameter."""
 
@@ -138,8 +144,14 @@ class TestParseFailureStillRecordsUsage:
         return LiteLLMClient(config=config, client=mock_client)
 
     @pytest.mark.asyncio
-    async def test_usage_recorded_on_parse_failure(self, client, caplog):
+    async def test_usage_recorded_on_parse_failure(self, client, caplog, monkeypatch):
         """JSON parse failure still records token usage on first attempt."""
+        # Skip tenacity's real backoff between the JSONDecodeError retries
+        from tenacity import wait_none
+
+        from graphiti_core.llm_client.client import LLMClient
+
+        monkeypatch.setattr(LLMClient._generate_response_with_retry.retry, 'wait', wait_none())
         # Return malformed JSON that will cause _extract_json to fail
         mock_choice = MagicMock()
         mock_choice.message.content = 'Not valid JSON at all'

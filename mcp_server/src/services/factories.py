@@ -99,7 +99,7 @@ except ImportError:
 
 
 def resolve_max_input_tokens(
-    api_url: str,
+    api_url: str | None,
     api_key: str,
     model: str,
     configured: int | None,
@@ -122,6 +122,17 @@ def resolve_max_input_tokens(
     import logging
 
     logger = logging.getLogger(__name__)
+
+    if not api_url:
+        logger.warning('No api_url for /model/info lookup, using configured max_input_tokens')
+        return configured
+
+    # The official OpenAI API has no /model/info; skip a pointless credentialed request.
+    from urllib.parse import urlparse
+
+    if urlparse(api_url).hostname == 'api.openai.com':
+        logger.info(f'max_input_tokens from config ({configured}); OpenAI API has no /model/info')
+        return configured
 
     # Strip trailing /v1 and trailing / from api_url
     base = api_url.rstrip('/')

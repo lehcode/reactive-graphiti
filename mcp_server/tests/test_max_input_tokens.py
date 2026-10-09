@@ -33,15 +33,15 @@ def make_response(status_code: int, json_data: list | None = None) -> httpx.Resp
 @pytest.mark.parametrize(
     'api_url,model,configured,expected',
     [
-        ('https://api.openai.com/v1', 'gpt-4', None, 8000),
-        ('https://api.openai.com/v1/', 'gpt-4', None, 8000),
-        ('https://api.openai.com/', 'gpt-4', None, 8000),
-        ('https://api.openai.com', 'gpt-4', None, 8000),
-        ('https://api.openai.com/v1', 'gpt-4', 4096, 8000),
-        ('https://api.openai.com/v1', 'gpt-4.1-mini', None, 8192),
-        ('https://api.openai.com/v1', 'gpt-3.5-turbo', None, 4096),
-        ('https://api.openai.com/v1', 'unknown-model', None, None),
-        ('https://api.openai.com/v1', 'unknown-model', 8192, 8192),
+        ('http://litellm:4000/v1', 'gpt-4', None, 8000),
+        ('http://litellm:4000/v1/', 'gpt-4', None, 8000),
+        ('http://litellm:4000/', 'gpt-4', None, 8000),
+        ('http://litellm:4000', 'gpt-4', None, 8000),
+        ('http://litellm:4000/v1', 'gpt-4', 4096, 8000),
+        ('http://litellm:4000/v1', 'gpt-4.1-mini', None, 8192),
+        ('http://litellm:4000/v1', 'gpt-3.5-turbo', None, 4096),
+        ('http://litellm:4000/v1', 'unknown-model', None, None),
+        ('http://litellm:4000/v1', 'unknown-model', 8192, 8192),
     ],
 )
 def test_resolve_from_model_info_success(api_url, model, configured, expected):
@@ -79,7 +79,7 @@ def test_v1_stripping():
         mock_client_cls.return_value = mock_client
 
         resolve_max_input_tokens(
-            'https://api.openai.com/v1/',
+            'http://litellm:4000/v1/',
             'sk-fake-key',
             'gpt-4',
             None,
@@ -101,7 +101,7 @@ def test_model_missing_fallback_configured():
         mock_client_cls.return_value = mock_client
 
         result = resolve_max_input_tokens(
-            'https://api.openai.com/v1',
+            'http://litellm:4000/v1',
             'sk-fake-key',
             'gpt-4',
             4096,
@@ -119,7 +119,7 @@ def test_http_error_fallback():
         mock_client_cls.return_value = mock_client
 
         result = resolve_max_input_tokens(
-            'https://api.openai.com/v1',
+            'http://litellm:4000/v1',
             'sk-fake-key',
             'gpt-4',
             8192,
@@ -138,7 +138,7 @@ def test_none_when_nothing_configured():
         mock_client_cls.return_value = mock_client
 
         result = resolve_max_input_tokens(
-            'https://api.openai.com/v1',
+            'http://litellm:4000/v1',
             'sk-fake-key',
             'gpt-4',
             None,
@@ -157,7 +157,7 @@ def test_mismatch_warning(caplog):
         mock_client_cls.return_value = mock_client
 
         resolve_max_input_tokens(
-            'https://api.openai.com/v1',
+            'http://litellm:4000/v1',
             'sk-fake-key',
             'gpt-4',
             4096,
@@ -177,7 +177,7 @@ def test_api_key_not_in_logs(caplog):
         mock_client_cls.return_value = mock_client
 
         resolve_max_input_tokens(
-            'https://api.openai.com/v1',
+            'http://litellm:4000/v1',
             'sk-secret-12345',
             'gpt-4',
             None,
@@ -209,3 +209,68 @@ def test_core_llm_config_support_check():
 
     assert _core_llm_config_accepts_max_input_tokens(ForkConfig) is True
     assert _core_llm_config_accepts_max_input_tokens(UpstreamConfig) is False
+
+
+def test_empty_api_url_returns_configured_without_request():
+    client = MagicMock()
+    assert resolve_max_input_tokens(None, 'k', 'gpt-4', 4096, client=client) == 4096
+    assert resolve_max_input_tokens('', 'k', 'gpt-4', None, client=client) is None
+    client.get.assert_not_called()
+
+
+def test_official_openai_host_skips_lookup():
+    """api.openai.com has no /model/info: no credentialed request, configured value used."""
+    client = MagicMock()
+    result = resolve_max_input_tokens(
+        'https://api.openai.com/v1', 'secret', 'gpt-4', 8192, client=client
+    )
+    assert result == 8192
+    client.get.assert_not_called()
+
+
+def _factory_module():
+    import sys
+
+    return sys.modules[resolve_max_input_tokens.__module__]
+
+
+@pytest.mark.parametrize('supports_kwarg', [True, False])
+def test_factory_forwards_resolved_limit_only_when_supported(monkeypatch, supports_kwarg):
+    """LLMClientFactory passes the resolved limit into the core LLMConfig only if it accepts it."""
+    import graphiti_core.llm_client.config as core_config
+
+    from config.schema import LLMConfig as McpLLMConfig
+    from config.schema import LLMProvidersConfig, OpenAIProviderConfig
+
+    captured: dict = {}
+
+    if supports_kwarg:
+
+        class FakeCoreConfig:
+            def __init__(self, max_input_tokens=None, **kwargs):
+                captured.update(kwargs, max_input_tokens=max_input_tokens)
+
+    else:
+
+        class FakeCoreConfig:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+    factories = _factory_module()
+    monkeypatch.setattr(core_config, 'LLMConfig', FakeCoreConfig)
+    monkeypatch.setattr(factories, 'resolve_max_input_tokens', lambda *a, **k: 14336)
+    monkeypatch.setattr(factories, 'LiteLLMClient', MagicMock())
+
+    config = McpLLMConfig(
+        provider='openai_generic',
+        model='tier1-graphiti-kg-local',
+        providers=LLMProvidersConfig(
+            openai=OpenAIProviderConfig(api_key='k', api_url='http://litellm:4000/v1')
+        ),
+    )
+    factories.LLMClientFactory.create(config)
+
+    if supports_kwarg:
+        assert captured['max_input_tokens'] == 14336
+    else:
+        assert 'max_input_tokens' not in captured
