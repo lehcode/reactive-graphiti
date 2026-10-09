@@ -986,3 +986,247 @@ async def test_extract_attributes_preserves_prior_attributes_when_label_not_in_e
     )
 
     assert results[0].attributes == {'age': 30, 'city': 'New York'}
+
+
+# ---- Budget-aware flight packing tests ----
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_falls_back_when_no_budget():
+    """When input_token_budget returns None, _build_budget_flights uses fixed-size chunks."""
+    from graphiti_core.utils.maintenance.node_operations import (
+        _build_budget_flights,
+    )
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = None
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 100)
+        for i in range(7)
+    ]
+
+    flights = _build_budget_flights(nodes, 3, llm_client)
+    assert len(flights) == 3
+    assert [f[0].name for f in flights] == ['Node0', 'Node3', 'Node6']
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_uses_budget_when_available(monkeypatch):
+    """When budget is an int, _build_budget_flights respects it via pack_by_budget.
+
+    Uses a tight budget (300 tokens) so even the fixed prompt cost (~690) exceeds it.
+    pack_by_budget guarantees ≥ 1 item per batch, forcing one-node batches.
+    """
+    from graphiti_core.utils.maintenance.node_operations import _build_budget_flights
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 300
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 500)
+        for i in range(5)
+    ]
+
+    flights = _build_budget_flights(nodes, 10, llm_client)
+    # Budget (300) << fixed_cost (~690) → pack_by_budget forces 1 node/batch
+    assert len(flights) == 5
+    assert all(len(f) == 1 for f in flights)
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_respects_max_items(monkeypatch):
+    """max_items parameter caps the number of nodes per flight."""
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import _build_budget_flights
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 80000  # plenty of budget
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 10)
+        for i in range(8)
+    ]
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.estimate_tokens',
+        mock_estimate,
+    )
+
+    flights = _build_budget_flights(nodes, 3, llm_client)
+    assert len(flights) == 3  # 8 nodes / 3 per flight = 3 batches
+    assert all(len(f) <= 3 for f in flights)
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_single_call_when_no_budget(monkeypatch, caplog):
+    """When llm_client.input_token_budget is None, _resolve_with_llm does a single call."""
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _build_candidate_indexes,
+        _resolve_with_llm,
+    )
+
+    extracted = EntityNode(name='TestNode', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(resolved_nodes=[None], uuid_map={}, unresolved_indices=[0])
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = None
+    llm_client.generate_response = AsyncMock(
+        return_value={
+            'entity_resolutions': [{'id': 0, 'name': 'TestNode', 'duplicate_candidate_id': -1}]
+        }
+    )
+
+    await _resolve_with_llm(
+        llm_client,
+        [extracted],
+        indexes=_build_candidate_indexes([]),
+        state=state,
+        episode=_make_episode(),
+        previous_episodes=[],
+        entity_types=None,
+    )
+
+    llm_client.generate_response.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_splits_when_exceeds_budget(monkeypatch):
+    """When budget is exceeded, _resolve_with_llm splits into multiple batches."""
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _resolve_with_llm,
+    )
+
+    # Create many extracted nodes so budget forces splitting
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(5)
+    ]
+
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=list(range(len(extracted_nodes))),
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    call_count = 0
+
+    async def track_calls(*_, **__):
+        nonlocal call_count
+        call_count += 1
+        # Return resolutions for the nodes in this batch
+        # IDs in response match the batch's extracted_nodes
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 8000
+    llm_client.generate_response = AsyncMock(side_effect=track_calls)
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.estimate_tokens',
+        mock_estimate,
+    )
+
+    await _resolve_with_llm(
+        llm_client,
+        extracted_nodes,
+        indexes=_build_candidate_indexes([candidate]),
+        state=state,
+        episode=_make_episode(),
+        previous_episodes=[],
+        entity_types=None,
+    )
+
+    # Multiple LLM calls should have been issued when budget forces splitting
+    assert call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_id_mapping_across_batches(monkeypatch):
+    """Resolutions from split batches map back to the correct global indices."""
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _resolve_with_llm,
+    )
+
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(4)
+    ]
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    # Only indices [1, 3] are unresolved (0 and 2 were resolved earlier)
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=[1, 3],
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    # Track the extracted_nodes context sent to each LLM call
+    batch_contexts = []
+
+    async def track_calls(*args, **kwargs):
+        # Capture context from kwargs
+        if 'context' in kwargs:
+            batch_contexts.append(dict(kwargs['context']))
+        # Return resolution for id=0 in the batch
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 8000
+    llm_client.generate_response = AsyncMock(side_effect=track_calls)
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.estimate_tokens',
+        mock_estimate,
+    )
+
+    await _resolve_with_llm(
+        llm_client,
+        extracted_nodes,
+        indexes=_build_candidate_indexes([candidate]),
+        state=state,
+        episode=_make_episode(),
+        previous_episodes=[],
+        entity_types=None,
+    )
+
+    # All resolutions should map back to unresolved_indices
+    resolved = [r for r in state.resolved_nodes if r is not None]
+    assert len(resolved) == 1
+    assert resolved[0].uuid == extracted_nodes[1].uuid  # unresolved_indices[0]

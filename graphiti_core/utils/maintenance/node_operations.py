@@ -15,6 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from time import time
@@ -42,6 +43,7 @@ from graphiti_core.prompts.extract_nodes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import node_similarity_search
+from graphiti_core.utils.content_chunking import estimate_tokens
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.attribute_utils import apply_capped_attributes
 from graphiti_core.utils.maintenance.dedup_helpers import (
@@ -59,11 +61,59 @@ from graphiti_core.utils.text_utils import (
     remaining_budget_for_previous_episodes,
     truncate_at_sentence,
 )
+from graphiti_core.utils.token_budget import pack_by_budget
 
 logger = logging.getLogger(__name__)
 
 # Maximum number of nodes to summarize in a single LLM call
 MAX_NODES = 30
+NODE_DEDUP_CANDIDATE_LIMIT = 15
+
+
+def _build_budget_flights(
+    nodes: list[EntityNode],
+    max_items: int,
+    llm_client: LLMClient,
+) -> list[list[EntityNode]]:
+    """Partition nodes into flights respecting the input-token budget."""
+    budget = llm_client.input_token_budget()
+    if not isinstance(budget, int):
+        # No budget → fall back to fixed-size flights
+        return [nodes[i : i + max_items] for i in range(0, len(nodes), max_items)]
+
+    # Per-node cost: estimated tokens of serialized entity dict in prompt
+    def _node_cost(node: EntityNode) -> int:
+        entry = {
+            'name': node.name,
+            'summary': node.summary,
+            'entity_types': node.labels,
+            'attributes': node.attributes,
+        }
+        return estimate_tokens(json.dumps(entry))
+
+    # Fixed cost: render prompt with empty entities + schema estimate
+    base_batch_context: dict[str, Any] = {
+        'entities': [],
+        'episode_content': '',
+        'previous_episodes': [],
+        'entity_type_descriptions': {},
+    }
+
+    messages = prompt_library.extract_nodes.extract_summaries_batch(base_batch_context)
+    fixed_cost = sum(estimate_tokens(m.content) for m in messages)
+    fixed_cost += estimate_tokens(json.dumps(SummarizedEntities.model_json_schema()))
+
+    batches = pack_by_budget(
+        nodes,
+        cost=_node_cost,
+        budget=budget,
+        fixed_cost=fixed_cost,
+        max_items=max_items,
+    )
+
+    return batches
+
+
 NODE_DEDUP_CANDIDATE_LIMIT = 15
 NODE_DEDUP_COSINE_MIN_SCORE = 0.6
 
@@ -610,14 +660,83 @@ async def _resolve_with_llm(
     context = dict(base_context)
     context['previous_episodes'] = ep_context
 
-    llm_response = await generate_prompt_response(
-        llm_client,
-        'dedupe_nodes.nodes',
-        prompt_library.dedupe_nodes.nodes,
-        context,
-        clients=clients,
-        response_model=NodeResolutions,
-    )
+    # Budget-aware sub-batch splitting for dedupe LLM
+    llm_response: Any = None
+    if previous_episodes is not None:
+        # Compute fixed_cost: render with empty extracted_nodes
+        base_cost_context = {
+            'extracted_nodes': [],
+            'existing_nodes': existing_nodes_context,
+            'episode_content': episode.content if episode is not None else '',
+            'previous_episodes': [],
+        }
+        messages = prompt_library.dedupe_nodes.nodes(base_cost_context)
+        fixed_cost = sum(
+            estimate_tokens(m.content if hasattr(m, 'content') else m) for m in messages
+        )
+        fixed_cost += estimate_tokens(json.dumps(NodeResolutions.model_json_schema()))
+
+        input_budget = llm_client.input_token_budget()
+        if isinstance(input_budget, int) and extracted_nodes_context:
+            # Per-node cost
+            def _node_cost(entry: dict) -> int:
+                return estimate_tokens(json.dumps(entry))
+
+            batches = pack_by_budget(
+                extracted_nodes_context,
+                cost=_node_cost,
+                budget=input_budget,
+                fixed_cost=fixed_cost,
+                max_items=len(extracted_nodes_context),
+            )
+
+            if len(batches) > 1:
+                # Multiple batches needed — issue separate LLM calls
+                all_resolutions: list[NodeDuplicate] = []
+                for batch in batches:
+                    batch_context = dict(context)
+                    batch_context['extracted_nodes'] = batch
+
+                    llm_response = await generate_prompt_response(
+                        llm_client,
+                        'dedupe_nodes.nodes',
+                        prompt_library.dedupe_nodes.nodes,
+                        batch_context,
+                        clients=clients,
+                        response_model=NodeResolutions,
+                    )
+
+                    resolutions = NodeResolutions(**llm_response).entity_resolutions
+                    all_resolutions.extend(resolutions)
+
+                llm_response = {'entity_resolutions': all_resolutions}
+            else:
+                llm_response = await generate_prompt_response(
+                    llm_client,
+                    'dedupe_nodes.nodes',
+                    prompt_library.dedupe_nodes.nodes,
+                    context,
+                    clients=clients,
+                    response_model=NodeResolutions,
+                )
+        else:
+            llm_response = await generate_prompt_response(
+                llm_client,
+                'dedupe_nodes.nodes',
+                prompt_library.dedupe_nodes.nodes,
+                context,
+                clients=clients,
+                response_model=NodeResolutions,
+            )
+    else:
+        llm_response = await generate_prompt_response(
+            llm_client,
+            'dedupe_nodes.nodes',
+            prompt_library.dedupe_nodes.nodes,
+            context,
+            clients=clients,
+            response_model=NodeResolutions,
+        )
 
     node_resolutions: list[NodeDuplicate] = NodeResolutions(**llm_response).entity_resolutions
 
@@ -987,10 +1106,12 @@ async def _extract_entity_summaries_batch(
     if not nodes_needing_llm:
         return
 
-    # Partition nodes into flights of MAX_NODES
-    node_flights = [
-        nodes_needing_llm[i : i + MAX_NODES] for i in range(0, len(nodes_needing_llm), MAX_NODES)
-    ]
+    # Partition nodes into budget-aware flights
+    node_flights = _build_budget_flights(
+        nodes_needing_llm,
+        MAX_NODES,
+        llm_client,
+    )
 
     # Process flights in parallel
     await semaphore_gather(
