@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -85,13 +84,12 @@ def build_previous_episodes_context(
     * ``budget_tokens=None`` → current behavior (backward compatible).
     * ``budget_tokens <= 0`` → empty list.
     * Otherwise walks episodes **newest-first** (``valid_at`` descending,
-      falling back to list order) and includes whole episodes whose
-      estimated serialized cost fits.  When the next episode doesn't fit
-      but ``>= _PARTIAL_TRUNCATION_THRESHOLD`` tokens remain, the episode
-      is included truncated via ``truncate_at_sentence``.
+      ties broken by list position) and includes whole episodes while their
+      estimated serialized cost fits.  The first episode that does not fit
+      ends the walk; it is included truncated via ``truncate_at_sentence``
+      when ``>= _PARTIAL_TRUNCATION_THRESHOLD`` tokens remain.
     * ``PREVIOUS_EPISODE_MAX_CHARS`` still applies as an upper bound per
-      episode.  Episodes are returned in **chronological** order (same
-      relative order as today), only containing the selected subset.
+      episode.  The selected subset keeps the caller's list order.
     """
     from graphiti_core import helpers
     from graphiti_core.utils.content_chunking import estimate_tokens
@@ -113,20 +111,18 @@ def build_previous_episodes_context(
         # Zero or negative budget → no episodes fit
         return []
 
-    # Sort episodes newest-first for budget allocation
-    sorted_by_newest = sorted(
-        episodes,
-        key=lambda e: (e.valid_at or datetime.min),
+    # Fill newest-first: by valid_at, ties broken by list position (later = newer)
+    newest_first = sorted(
+        range(len(episodes)),
+        key=lambda i: (episodes[i].valid_at, i),
         reverse=True,
     )
 
     remaining = budget_tokens
-    selected: list[dict[str, str | None]] = []
+    selected: dict[int, dict[str, str | None]] = {}
 
-    for ep in sorted_by_newest:
-        if remaining < 0:
-            break
-
+    for idx in newest_first:
+        ep = episodes[idx]
         ts = ep.valid_at.isoformat() if ep.valid_at else None
         content = ep.content
         if max_chars > 0:
@@ -138,10 +134,12 @@ def build_previous_episodes_context(
 
         if episode_tokens <= remaining:
             remaining -= episode_tokens
-            selected.append({'content': content, 'timestamp': ts})
-        elif remaining >= _PARTIAL_TRUNCATION_THRESHOLD:
-            # Partially truncate to fit remaining budget.
-            # Iteratively shrink until the truncated dict fits.
+            selected[idx] = episode_dict
+            continue
+
+        # First episode that does not fit whole is the boundary: include it truncated when
+        # enough budget is left, then stop so no older episode outranks a newer one.
+        if remaining >= _PARTIAL_TRUNCATION_THRESHOLD:
             max_content_chars = remaining * _CHARS_PER_TOKEN
             for _ in range(5):  # max iterations to avoid infinite loops
                 truncated = truncate_at_sentence(content, max_content_chars)
@@ -149,16 +147,16 @@ def build_previous_episodes_context(
                     estimate_tokens(json.dumps({'content': truncated, 'timestamp': ts})) + 10
                 )
                 if truncated_tokens <= remaining:
-                    remaining -= truncated_tokens
-                    selected.append({'content': truncated, 'timestamp': ts})
-                    break  # stop after this episode
+                    selected[idx] = {'content': truncated, 'timestamp': ts}
+                    break
                 # Shrink by 10% and retry
                 max_content_chars = int(max_content_chars * 0.9)
                 if max_content_chars < 10:
                     break
+        break
 
-    # Return in chronological order (same as current behavior)
-    return sorted(selected, key=lambda d: (d.get('timestamp') or ''))
+    # Same relative order as the caller's list (and as the budget=None path)
+    return [selected[i] for i in sorted(selected)]
 
 
 def remaining_budget_for_previous_episodes(

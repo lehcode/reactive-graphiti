@@ -447,3 +447,78 @@ class TestRemainingBudgetForPreviousEpisodes:
             self._client(10), lambda ctx: ['y' * 4000], {}
         )
         assert result == 0
+
+
+def _budget_ep(content: str, valid_at: datetime) -> EpisodicNode:
+    return EpisodicNode(
+        name='ep',
+        group_id='',
+        labels=[],
+        source=EpisodeType.text,
+        source_description='test',
+        content=content,
+        valid_at=valid_at,
+        entity_edges=[],
+    )
+
+
+class TestBuildPreviousEpisodesContextBudgetOrder:
+    def test_equal_timestamps_keep_caller_order(self):
+        ts = datetime(2024, 1, 1)
+        episodes = [_budget_ep(f'Episode {i}.', ts) for i in range(4)]
+
+        result = build_previous_episodes_context(episodes, budget_tokens=10_000)
+
+        assert result == build_previous_episodes_context(episodes)
+        assert [r['content'] for r in result] == [f'Episode {i}.' for i in range(4)]
+
+    def test_non_chronological_input_matches_unbudgeted_order(self):
+        episodes = [
+            _budget_ep('B.', datetime(2024, 1, 2)),
+            _budget_ep('A.', datetime(2024, 1, 1)),
+            _budget_ep('C.', datetime(2024, 1, 3)),
+        ]
+
+        result = build_previous_episodes_context(episodes, budget_tokens=10_000)
+
+        assert result == build_previous_episodes_context(episodes)
+
+    def test_equal_timestamps_drop_earliest_listed_first(self):
+        ts = datetime(2024, 1, 1)
+        episodes = [_budget_ep(f'Episode {i}.', ts) for i in range(3)]
+        one_cost = estimate_tokens(
+            json.dumps({'content': 'Episode 0.', 'timestamp': ts.isoformat()})
+        )
+
+        # Room for two whole episodes, too little for a truncated third
+        result = build_previous_episodes_context(episodes, budget_tokens=2 * (one_cost + 10) + 5)
+
+        assert [r['content'] for r in result] == ['Episode 1.', 'Episode 2.']
+
+
+class TestBuildPreviousEpisodesContextBudgetBoundary:
+    def test_older_episode_not_added_after_truncated_boundary(self):
+        old = _budget_ep('Old short.', datetime(2024, 1, 1))
+        big = _budget_ep('Sentence number. ' * 600, datetime(2024, 1, 2))
+        new = _budget_ep('New short.', datetime(2024, 1, 3))
+
+        result = build_previous_episodes_context([old, big, new], budget_tokens=1000)
+
+        contents = [r['content'] for r in result]
+        assert 'Old short.' not in contents
+        assert contents[-1] == 'New short.'
+        assert len(contents) == 2
+        assert len(contents[0]) < len(big.content)
+
+    def test_older_episode_not_added_when_boundary_skipped(self):
+        old = _budget_ep('Old short.', datetime(2024, 1, 1))
+        big = _budget_ep('Sentence number. ' * 600, datetime(2024, 1, 2))
+        new = _budget_ep('New short.', datetime(2024, 1, 3))
+        new_cost = estimate_tokens(
+            json.dumps({'content': 'New short.', 'timestamp': new.valid_at.isoformat()})
+        )
+
+        # After the newest episode, room for the old one but under the truncation threshold
+        result = build_previous_episodes_context([old, big, new], budget_tokens=new_cost + 10 + 40)
+
+        assert [r['content'] for r in result] == ['New short.']
