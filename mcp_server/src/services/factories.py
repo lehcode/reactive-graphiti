@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
@@ -98,6 +98,100 @@ except ImportError:
     HAS_OPENAI_GENERIC = True
 
 
+def resolve_max_input_tokens(
+    api_url: str,
+    api_key: str,
+    model: str,
+    configured: int | None,
+    *,
+    client: Any | None = None,
+) -> int | None:
+    """Resolve max_input_tokens from LiteLLM /model/info endpoint.
+
+    Returns the LiteLLM-detected value if available, otherwise ``configured``,
+    or ``None`` when neither is available.  Never raises.
+
+    Precedence:
+        * LiteLLM value (from GET ``{base}/model/info``) wins.
+        * If ``configured`` is set and differs, logs a WARNING with both values.
+        * Lookup failure (network, non-200, missing model/field) → ``configured``
+          with WARNING; neither → ``None`` with WARNING.
+        * Logs resolved value at INFO.
+        * Never raises. Never logs ``api_key``.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Strip trailing /v1 and trailing / from api_url
+    base = api_url.rstrip('/')
+    if base.endswith('/v1'):
+        base = base[:-3]
+
+    url = f'{base}/model/info'
+
+    lite_value: int | None = None
+    try:
+        headers = {'Authorization': f'Bearer {api_key}'}
+        # Use the injectable client (sync for compatibility), or a short-lived one
+        if client is None:
+            import httpx
+
+            owned_client = httpx.Client()
+            try:
+                response = owned_client.get(url, headers=headers, timeout=5.0)
+            finally:
+                owned_client.close()
+        else:
+            response = client.get(url, headers=headers, timeout=5.0)
+        if response.status_code == 200:
+            payload = response.json()
+            # LiteLLM proxy returns {"data": [{"model_name": ..., "model_info": {...}}]}
+            entries = payload.get('data', []) if isinstance(payload, dict) else []
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get('model_name') == model:
+                    model_info = entry.get('model_info') or {}
+                    raw = model_info.get('max_input_tokens')
+                    if isinstance(raw, int) and raw > 0:
+                        lite_value = raw
+                        break
+        elif response.status_code >= 400:
+            logger.warning(
+                f'/model/info returned {response.status_code}, using configured max_input_tokens'
+            )
+    except Exception as e:
+        logger.warning(
+            f'/model/info lookup failed ({type(e).__name__}), using configured max_input_tokens'
+        )
+
+    # Determine precedence
+    if lite_value is not None and configured is not None and lite_value != configured:
+        logger.warning(f'max_input_tokens mismatch: LiteLLM={lite_value}, configured={configured}')
+
+    resolved = lite_value if lite_value is not None else configured
+
+    if resolved is None:
+        logger.warning('max_input_tokens not resolved; budgeting disabled')
+    else:
+        logger.info(f'max_input_tokens resolved to {resolved}')
+
+    return resolved
+
+
+def _core_llm_config_accepts_max_input_tokens(config_cls: Any) -> bool:
+    """Whether the installed graphiti-core LLMConfig takes ``max_input_tokens``.
+
+    Upstream PyPI graphiti-core (used by Dockerfile.standalone) lacks it; passing it there
+    would raise TypeError at startup.
+    """
+    import inspect
+
+    try:
+        return 'max_input_tokens' in inspect.signature(config_cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _validate_api_key(provider_name: str, api_key: str | None, logger) -> str:
     """Validate API key is present.
 
@@ -147,13 +241,26 @@ class LLMClientFactory:
                 # Use the same model for both main and small model slots
                 small_model = config.model
 
-                llm_config = CoreLLMConfig(
-                    api_key=api_key,
-                    model=config.model,
-                    small_model=small_model,
-                    temperature=config.temperature if config.temperature is not None else 0.0,
-                    max_tokens=config.max_tokens,
+                llm_kwargs = {
+                    'api_key': api_key,
+                    'model': config.model,
+                    'small_model': small_model,
+                    'temperature': config.temperature if config.temperature is not None else 0.0,
+                    'max_tokens': config.max_tokens,
+                }
+                # Resolve max_input_tokens from /model/info; pass only if supported
+                lite_val = resolve_max_input_tokens(
+                    config.providers.openai.api_url,
+                    api_key,
+                    config.model,
+                    config.max_input_tokens,
                 )
+                if lite_val is not None and _core_llm_config_accepts_max_input_tokens(
+                    CoreLLMConfig
+                ):
+                    llm_kwargs['max_input_tokens'] = lite_val
+
+                llm_config = CoreLLMConfig(**llm_kwargs)
 
                 if config.structured_output_mode is not None or config.model.startswith(
                     ('ollama', 'vllm', 'llama', 'phi')
@@ -295,14 +402,26 @@ class LLMClientFactory:
 
                 from graphiti_core.llm_client.config import LLMConfig as CoreLLMConfig
 
-                llm_config = CoreLLMConfig(
-                    api_key=api_key,
-                    base_url=base_url,
-                    model=config.model,
-                    small_model='gpt-4.1-mini',
-                    temperature=config.temperature if config.temperature is not None else 0.0,
-                    max_tokens=config.max_tokens,
+                llm_kwargs = {
+                    'api_key': api_key,
+                    'base_url': base_url,
+                    'model': config.model,
+                    'small_model': 'gpt-4.1-mini',
+                    'temperature': config.temperature if config.temperature is not None else 0.0,
+                    'max_tokens': config.max_tokens,
+                }
+                lite_val = resolve_max_input_tokens(
+                    base_url,
+                    api_key,
+                    config.model,
+                    config.max_input_tokens,
                 )
+                if lite_val is not None and _core_llm_config_accepts_max_input_tokens(
+                    CoreLLMConfig
+                ):
+                    llm_kwargs['max_input_tokens'] = lite_val
+
+                llm_config = CoreLLMConfig(**llm_kwargs)
                 return LiteLLMClient(config=llm_config)
 
             case _:

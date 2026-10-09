@@ -14,6 +14,7 @@ llm:
   provider: "openai"  # Options: openai, azure_openai, anthropic, gemini, groq
   model: "gpt-4o-mini"
   max_tokens: 4096
+  # max_input_tokens: <int>  # Resolve from /model/info at startup (fallback only)
   # Use json_object for OpenAI-compatible providers that accept json_schema
   # but do not reliably enforce the requested Pydantic schema.
   structured_output_mode: ${LLM_STRUCTURED_OUTPUT_MODE:json_schema}
