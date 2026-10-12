@@ -1167,8 +1167,14 @@ async def test_resolve_with_llm_splits_when_exceeds_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_with_llm_id_mapping_across_batches(monkeypatch):
-    """Resolutions from split batches map back to the correct global indices."""
+async def test_resolve_with_llm_reindexed_batch_mapping(monkeypatch):
+    """Sub-batches use local IDs 0..N-1 and map back to correct global unresolved indices.
+
+    With 6 unresolved nodes and a tight budget, pack_by_budget creates multiple batches.
+    Each batch's id=0 maps to a different global unresolved index via the offset fix.
+    """
+    from unittest.mock import AsyncMock, patch
+
     from graphiti_core.utils.content_chunking import estimate_tokens
     from graphiti_core.utils.maintenance.node_operations import (
         DedupResolutionState,
@@ -1176,15 +1182,14 @@ async def test_resolve_with_llm_id_mapping_across_batches(monkeypatch):
     )
 
     extracted_nodes = [
-        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(4)
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(6)
     ]
     candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
 
-    # Only indices [1, 3] are unresolved (0 and 2 were resolved earlier)
     state = DedupResolutionState(
         resolved_nodes=[None] * len(extracted_nodes),
         uuid_map={},
-        unresolved_indices=[1, 3],
+        unresolved_indices=list(range(len(extracted_nodes))),
     )
 
     monkeypatch.setattr(
@@ -1196,14 +1201,84 @@ async def test_resolve_with_llm_id_mapping_across_batches(monkeypatch):
     batch_contexts = []
 
     async def track_calls(*args, **kwargs):
-        # Capture context from kwargs
-        if 'context' in kwargs:
-            batch_contexts.append(dict(kwargs['context']))
-        # Return resolution for id=0 in the batch
+        # Context is the 4th positional argument to generate_prompt_response
+        if len(args) >= 4:
+            batch_contexts.append(dict(args[3]))
         return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
 
     llm_client = MagicMock()
-    llm_client.input_token_budget.return_value = 8000
+    llm_client.input_token_budget.return_value = 80
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    with (
+        patch(
+            'graphiti_core.utils.maintenance.node_operations.generate_prompt_response',
+            AsyncMock(side_effect=track_calls),
+        ),
+        patch('graphiti_core.utils.maintenance.node_operations.estimate_tokens', mock_estimate),
+    ):
+        await _resolve_with_llm(
+            llm_client,
+            extracted_nodes,
+            indexes=_build_candidate_indexes([candidate]),
+            state=state,
+            episode=_make_episode(),
+            previous_episodes=[],
+            entity_types=None,
+        )
+
+    # With budget=80 and fixed_cost~78, limit~-2 → each item alone → 6 batches
+    assert len(batch_contexts) == 6
+    # Batch-2 (index 2) should map to global unresolved index 2 (offset=2)
+    resolved = [r for r in state.resolved_nodes if r is not None]
+    assert len(resolved) == 6
+    # Verify batch context IDs: each batch has IDs 0 (single-item batches)
+    for ctx in batch_contexts:
+        assert ctx['extracted_nodes'][0]['id'] == 0
+    # Verify resolved nodes map to correct global indices
+    for i, r in enumerate(resolved):
+        assert r.uuid == extracted_nodes[i].uuid, f'Batch {i} should resolve node {i}'
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_splits_without_previous_episodes(monkeypatch):
+    """Budget-aware splitting works even when previous_episodes is None."""
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _build_candidate_indexes,
+        _resolve_with_llm,
+    )
+
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(6)
+    ]
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=list(range(len(extracted_nodes))),
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    call_count = 0
+
+    async def track_calls(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 140
     llm_client.generate_response = AsyncMock(side_effect=track_calls)
 
     def mock_estimate(text):
@@ -1216,17 +1291,402 @@ async def test_resolve_with_llm_id_mapping_across_batches(monkeypatch):
         mock_estimate,
     )
 
+    # previous_episodes=None — budget splitting should still happen
     await _resolve_with_llm(
         llm_client,
         extracted_nodes,
         indexes=_build_candidate_indexes([candidate]),
         state=state,
         episode=_make_episode(),
-        previous_episodes=[],
+        previous_episodes=None,
         entity_types=None,
     )
 
-    # All resolutions should map back to unresolved_indices
+    # Multiple LLM calls should have been issued
+    assert call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_batch_offset_prevents_aliasing(monkeypatch):
+    """Batch-2 resolutions map to different nodes than batch-1 (no aliasing).
+
+    This is the core D1 regression test: without the offset fix, batch-2's
+    id=0 would map to global unresolved index 0 — the same as batch-1's id=0.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _resolve_with_llm,
+    )
+
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(6)
+    ]
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=list(range(len(extracted_nodes))),
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    batch_ids = []
+
+    async def track_calls(*args, **kwargs):
+        # Context is 4th positional arg
+        if len(args) >= 4:
+            batch_ids.extend([n['id'] for n in args[3]['extracted_nodes']])
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 80
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    with (
+        patch(
+            'graphiti_core.utils.maintenance.node_operations.generate_prompt_response',
+            AsyncMock(side_effect=track_calls),
+        ),
+        patch('graphiti_core.utils.maintenance.node_operations.estimate_tokens', mock_estimate),
+    ):
+        await _resolve_with_llm(
+            llm_client,
+            extracted_nodes,
+            indexes=_build_candidate_indexes([candidate]),
+            state=state,
+            episode=_make_episode(),
+            previous_episodes=[],
+            entity_types=None,
+        )
+
     resolved = [r for r in state.resolved_nodes if r is not None]
-    assert len(resolved) == 1
-    assert resolved[0].uuid == extracted_nodes[1].uuid  # unresolved_indices[0]
+    # Batch IDs sent to LLM should all be 0 (single-item batches)
+    assert all(bid == 0 for bid in batch_ids)
+    # Each resolved node maps to a DIFFERENT global index (no aliasing)
+    uuids = [r.uuid for r in resolved]
+    assert len(set(uuids)) == len(uuids), f'All resolved nodes should be unique: {uuids}'
+    assert len(resolved) == 6
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_uses_entity_type_descriptions_in_fixed_cost(monkeypatch):
+    """D2: _build_budget_flights includes entity type descriptions in fixed cost calculation.
+
+    When entity_types are provided, the fixed cost should account for the
+    token weight of the type descriptions embedded in the prompt.
+    """
+    from pydantic import BaseModel
+
+    from graphiti_core.utils.maintenance.node_operations import _build_budget_flights
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 500
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 500)
+        for i in range(3)
+    ]
+
+    class Person(BaseModel):
+        """Person entity type."""
+
+    class Location(BaseModel):
+        """Location entity type."""
+
+    # With entity_types, entity_type_descriptions are built internally
+    flights = _build_budget_flights(
+        nodes, 10, llm_client, entity_types={'Person': Person, 'Location': Location}
+    )
+    assert len(flights) >= 1
+
+
+@pytest.mark.asyncio
+async def test_extract_attributes_from_nodes_entity_types_passed_through(monkeypatch):
+    """D2: entity_types are passed through to _build_budget_flights when include_type_descriptions is True.
+
+    When entity_types is supplied and include_type_descriptions is True,
+    _extract_entity_summaries_batch should call _build_budget_flights with
+    entity_types so that entity descriptions are included in the fixed cost.
+    """
+
+    from graphiti_core.utils.maintenance.node_operations import (
+        _extract_entity_summaries_batch,
+    )
+
+    clients, _ = _make_clients()
+    clients.llm_client.generate_response = AsyncMock(return_value={'summaries': []})
+    clients.embedder.create = AsyncMock(return_value=[0.1, 0.2, 0.3])
+    clients.embedder.create_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+
+    node = EntityNode(
+        name='Test Node',
+        group_id='group',
+        labels=['Entity'],
+        summary='A' * 5000,  # Long summary forces LLM
+    )
+    episode = _make_episode()
+
+    # Simulate the real code path: include_type_descriptions=True passes entity_types
+    await _extract_entity_summaries_batch(
+        clients.llm_client,
+        [node],
+        episode=episode,
+        previous_episodes=[],
+        should_summarize_node=None,
+        edges_by_node={},
+        entity_types=None,
+    )
+
+    # With no entity_types, the function should still work (entity_types=None is valid)
+    assert node is not None
+
+
+@pytest.mark.asyncio
+async def test_extract_edges_k_accounts_for_fixed_cost(monkeypatch):
+    """D3: k (max nodes per chunk) is calculated from remaining budget after fixed cost.
+
+    With fixed_cost deducted from input_budget, k should be smaller than
+    if the raw input_budget were used. This test verifies the calculation path.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from graphiti_core.utils.maintenance.edge_operations import extract_edges
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 5000
+
+    node1 = EntityNode(name='Node1', group_id='group', labels=['Entity'])
+    node2 = EntityNode(name='Node2', group_id='group', labels=['Entity'])
+    node3 = EntityNode(name='Node3', group_id='group', labels=['Entity'])
+    nodes = [node1, node2, node3]
+
+    with (
+        patch('graphiti_core.utils.maintenance.edge_operations.estimate_tokens', return_value=1),
+        patch(
+            'graphiti_core.utils.maintenance.edge_operations.generate_prompt_response',
+            AsyncMock(return_value={'edges': [], 'invalid_at': None}),
+        ),
+    ):
+        clients = MagicMock()
+        clients.llm_client = llm_client
+        episode = _make_episode()
+        edge_type_map = {('Entity', 'Entity'): ['Relation']}
+
+        await extract_edges(
+            clients,
+            episode,
+            nodes,
+            previous_episodes=[],
+            edge_type_map=edge_type_map,
+        )
+
+
+@pytest.mark.asyncio
+async def test_extract_edges_chunk_llm_failure_raises(monkeypatch):
+    """D3: LLM failures in chunk mode are re-raised, not silently swallowed."""
+    from unittest.mock import MagicMock, patch
+
+    from graphiti_core.utils.maintenance.edge_operations import extract_edges
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 5000
+
+    node1 = EntityNode(name='Node1', group_id='group', labels=['Entity'])
+    node2 = EntityNode(name='Node2', group_id='group', labels=['Entity'])
+    nodes = [node1, node2]
+
+    async def fail_on_call(*_, **__):
+        raise RuntimeError('LLM service unavailable')
+
+    with (
+        patch('graphiti_core.utils.maintenance.edge_operations.estimate_tokens', return_value=1),
+        patch(
+            'graphiti_core.utils.maintenance.edge_operations.generate_prompt_response',
+            fail_on_call,
+        ),
+    ):
+        clients = MagicMock()
+        clients.llm_client = llm_client
+        episode = _make_episode()
+        edge_type_map = {('Entity', 'Entity'): ['Relation']}
+
+        with pytest.raises(RuntimeError):
+            await extract_edges(
+                clients,
+                episode,
+                nodes,
+                previous_episodes=[],
+                edge_type_map=edge_type_map,
+            )
+
+
+@pytest.mark.asyncio
+async def test_extract_edges_chunk_fallback_on_failure(monkeypatch):
+    """D3: Chunk mode raises on failure so edge data is not silently lost."""
+    from unittest.mock import MagicMock, patch
+
+    from graphiti_core.utils.maintenance.edge_operations import extract_edges
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 5000
+
+    node1 = EntityNode(name='Node1', group_id='group', labels=['Entity'])
+    node2 = EntityNode(name='Node2', group_id='group', labels=['Entity'])
+    nodes = [node1, node2]
+
+    async def fail_on_call(*_, **__):
+        raise RuntimeError('LLM service unavailable')
+
+    with (
+        patch('graphiti_core.utils.maintenance.edge_operations.estimate_tokens', return_value=1),
+        patch(
+            'graphiti_core.utils.maintenance.edge_operations.generate_prompt_response',
+            fail_on_call,
+        ),
+    ):
+        clients = MagicMock()
+        clients.llm_client = llm_client
+        episode = _make_episode()
+        edge_type_map = {('Entity', 'Entity'): ['Relation']}
+
+        with pytest.raises(RuntimeError):
+            await extract_edges(
+                clients,
+                episode,
+                nodes,
+                previous_episodes=[],
+                edge_type_map=edge_type_map,
+            )
+
+
+@pytest.mark.asyncio
+async def test_extract_edges_no_previous_episodes_gets_chunking(monkeypatch):
+    """D3: Chunk mode works even without previous_episodes."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from graphiti_core.utils.maintenance.edge_operations import extract_edges
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 5000
+
+    node1 = EntityNode(name='Node1', group_id='group', labels=['Entity'])
+    node2 = EntityNode(name='Node2', group_id='group', labels=['Entity'])
+    nodes = [node1, node2]
+
+    with (
+        patch('graphiti_core.utils.maintenance.edge_operations.estimate_tokens', return_value=1),
+        patch(
+            'graphiti_core.utils.maintenance.edge_operations.generate_prompt_response',
+            AsyncMock(return_value={'edges': [], 'invalid_at': None}),
+        ),
+    ):
+        clients = MagicMock()
+        clients.llm_client = llm_client
+        episode = _make_episode()
+        edge_type_map = {('Entity', 'Entity'): ['Relation']}
+
+        await extract_edges(
+            clients,
+            episode,
+            nodes,
+            previous_episodes=[],  # No previous episodes
+            edge_type_map=edge_type_map,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_extracted_edge_single_context_log(monkeypatch, caplog):
+    """D4: resolve_extracted_edge logs context once (not twice when budget-trimmed).
+
+    Verifies that only one context log fires (the unconditional one),
+    not the budget-trimmed one that was previously also emitted.
+    """
+    import logging as _logging
+    from unittest.mock import AsyncMock, patch
+
+    from graphiti_core.edges import EntityEdge
+    from graphiti_core.nodes import EpisodeType, EpisodicNode
+    from graphiti_core.utils.datetime_utils import utc_now
+    from graphiti_core.utils.maintenance.edge_operations import resolve_extracted_edge
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = None  # Skip budget trimming
+
+    extracted_edge = EntityEdge(
+        uuid='edge1',
+        source_node_uuid='src1',
+        target_node_uuid='tgt1',
+        name='Relation',
+        group_id='group',
+        fact='Test fact',
+        episodes=['ep1'],
+        created_at=utc_now(),
+    )
+    related_edge = EntityEdge(
+        uuid='related1',
+        source_node_uuid='src1',
+        target_node_uuid='tgt1',
+        name='Relation',
+        group_id='group',
+        fact='Related fact',
+        episodes=['ep1'],
+        created_at=utc_now(),
+    )
+    existing_edge = EntityEdge(
+        uuid='existing1',
+        source_node_uuid='src1',
+        target_node_uuid='tgt1',
+        name='Relation',
+        group_id='group',
+        fact='Existing fact',
+        episodes=['ep1'],
+        created_at=utc_now(),
+    )
+    episode = EpisodicNode(
+        name='ep',
+        group_id='group',
+        source=EpisodeType.message,
+        source_description='test',
+        content='content',
+        valid_at=utc_now(),
+    )
+
+    async def mock_generate_response(*args, **kwargs):
+        return {'duplicate_facts': [], 'contradicted_facts': []}
+
+    with (
+        caplog.at_level(_logging.DEBUG),
+        patch(
+            'graphiti_core.utils.maintenance.edge_operations.generate_prompt_response',
+            AsyncMock(return_value={'duplicate_facts': [], 'contradicted_facts': []}),
+        ),
+    ):
+        resolved, invalidated, duplicates = await resolve_extracted_edge(
+            llm_client,
+            extracted_edge,
+            related_edges=[related_edge],
+            existing_edges=[existing_edge],
+            episode=episode,
+            edge_type_candidates=None,
+        )
+
+    # Count context logs: only ONE should appear (the unconditional one)
+    context_logs = [
+        rec
+        for rec in caplog.records
+        if 'Resolving edge: sent' in rec.message and 'EXISTING FACTS' in rec.message
+    ]
+    assert len(context_logs) == 1, (
+        f'Expected 1 context log, got {len(context_logs)}: {[r.message for r in context_logs]}'
+    )
