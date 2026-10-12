@@ -666,84 +666,58 @@ async def _resolve_with_llm(
     context = dict(base_context)
     context['previous_episodes'] = ep_context
 
-    # Budget-aware sub-batch splitting for dedupe LLM
-    llm_response: Any = None
-    # Compute fixed_cost: render with empty extracted_nodes
-    base_cost_context = {
-        'extracted_nodes': [],
-        'existing_nodes': existing_nodes_context,
-        'episode_content': episode.content if episode is not None else '',
-        'previous_episodes': [],
-    }
-    messages = prompt_library.dedupe_nodes.nodes(base_cost_context)
-    fixed_cost = sum(
-        estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
-    )
-    fixed_cost += estimate_tokens(json.dumps(NodeResolutions.model_json_schema()))
-
+    # Split extracted nodes into sub-batches when the prompt exceeds the input-token budget.
+    # Every batch carries all candidates, the episode and the previous episodes; only the
+    # extracted nodes are partitioned.
+    batches: list[list[dict[str, Any]]] = [extracted_nodes_context]
     input_budget = llm_client.input_token_budget()
-    if isinstance(input_budget, int) and extracted_nodes_context:
-        # Per-node cost
-        def _node_cost(entry: dict) -> int:
-            return estimate_tokens(json.dumps(entry))
-
+    if isinstance(input_budget, int) and len(extracted_nodes_context) > 1:
+        cost_context = dict(context)
+        cost_context['extracted_nodes'] = []
+        fixed_cost = sum(
+            estimate_tokens(m.content if hasattr(m, 'content') else str(m))
+            for m in prompt_library.dedupe_nodes.nodes(cost_context)
+        )
+        fixed_cost += estimate_tokens(json.dumps(NodeResolutions.model_json_schema()))
         batches = pack_by_budget(
             extracted_nodes_context,
-            cost=_node_cost,
+            cost=lambda entry: estimate_tokens(json.dumps(entry)),
             budget=input_budget,
             fixed_cost=fixed_cost,
-            max_items=len(extracted_nodes_context),
         )
-
         if len(batches) > 1:
-            # Multiple batches needed — issue separate LLM calls
-            # Each batch re-indexes its extracted_nodes to IDs 0..N-1
-            # and tracks its offset into the full unresolved list.
-            all_resolutions: list[NodeDuplicate] = []
-            batch_offset = 0
-            for batch in batches:
-                batch_context = dict(context)
-                batch_context['extracted_nodes'] = [
-                    {**entry, 'id': i} for i, entry in enumerate(batch)
-                ]
-
-                llm_response = await generate_prompt_response(
-                    llm_client,
-                    'dedupe_nodes.nodes',
-                    prompt_library.dedupe_nodes.nodes,
-                    batch_context,
-                    clients=clients,
-                    response_model=NodeResolutions,
-                )
-
-                resolutions = NodeResolutions(**llm_response).entity_resolutions
-                # Map batch-relative IDs back to global unresolved indices
-                for r in resolutions:
-                    r.id += batch_offset
-                all_resolutions.extend(resolutions)
-                batch_offset += len(batch)
-
-            llm_response = {'entity_resolutions': all_resolutions}
-        else:
-            llm_response = await generate_prompt_response(
-                llm_client,
-                'dedupe_nodes.nodes',
-                prompt_library.dedupe_nodes.nodes,
-                context,
-                clients=clients,
-                response_model=NodeResolutions,
+            logger.debug(
+                '_resolve_with_llm: %d entities split into %d batches (budget=%d fixed=%d)',
+                len(extracted_nodes_context),
+                len(batches),
+                input_budget,
+                fixed_cost,
             )
-    else:
+
+    node_resolutions: list[NodeDuplicate] = []
+    for batch in batches:
+        if len(batches) == 1:
+            batch_context = context
+        else:
+            # The prompt numbers entities 0..N-1 per call, so each batch is re-numbered
+            batch_context = dict(context)
+            batch_context['extracted_nodes'] = [{**entry, 'id': i} for i, entry in enumerate(batch)]
         llm_response = await generate_prompt_response(
             llm_client,
             'dedupe_nodes.nodes',
             prompt_library.dedupe_nodes.nodes,
-            context,
+            batch_context,
             clients=clients,
             response_model=NodeResolutions,
         )
-
-    node_resolutions: list[NodeDuplicate] = NodeResolutions(**llm_response).entity_resolutions
+        batch_resolutions = NodeResolutions(**llm_response).entity_resolutions
+        if len(batches) > 1:
+            global_ids = [entry['id'] for entry in batch]
+            for resolution in batch_resolutions:
+                # Out-of-range ids map to -1 so they stay invalid instead of aliasing a node
+                # of another batch
+                resolution.id = global_ids[resolution.id] if 0 <= resolution.id < len(batch) else -1
+        node_resolutions.extend(batch_resolutions)
 
     valid_relative_range = range(len(state.unresolved_indices))
     processed_relative_ids: set[int] = set()

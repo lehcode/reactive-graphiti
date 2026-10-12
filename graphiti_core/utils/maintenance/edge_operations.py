@@ -218,11 +218,24 @@ async def extract_edges(
     input_budget = llm_client.input_token_budget()
     nodes_context: list[dict] = [{'name': n.name, 'entity_types': n.labels} for n in nodes]
 
-    # Budget-aware covering chunks
-    if isinstance(input_budget, int) and len(nodes) > 1 and input_budget > fixed_cost:
-        # Calculate max nodes per chunk using remaining budget after fixed cost
-        remaining_budget = input_budget - fixed_cost
-        k = max(2, min(30, remaining_budget // max(_node_cost(nodes[0]), 1)))
+    # Covering chunks only when the nodes do not fit next to the fixed prompt
+    node_costs = [_node_cost(n) for n in nodes]
+    if (
+        isinstance(input_budget, int)
+        and len(nodes) > 2
+        and fixed_cost + sum(node_costs) > input_budget
+    ):
+        # Every pair of nodes must share a chunk, so a chunk holds at least 2 nodes
+        k = (input_budget - fixed_cost) // max(max(node_costs), 1)
+        if k < 2:
+            logger.warning(
+                'extract_edges: budget %d leaves room for %d nodes after fixed cost %d; '
+                'using chunks of 2 (requests will exceed the budget)',
+                input_budget,
+                max(k, 0),
+                fixed_cost,
+            )
+        k = min(max(k, 2), len(nodes) - 1)
         chunks = generate_covering_chunks(nodes, k)
 
         # Issue LLM call for each chunk and collect all edges
@@ -247,45 +260,41 @@ async def extract_edges(
                 previous_episodes, chunk_budget
             )
 
-            try:
-                chunk_response = await generate_prompt_response(
-                    llm_client,
-                    'extract_edges.edge',
-                    prompt_library.extract_edges.edge,
-                    chunk_context,
-                    clients=clients,
-                    response_model=ExtractedEdges,
-                    max_tokens=extract_edges_max_tokens,
-                    group_id=group_id or primary_episode.group_id,
-                )
-                chunk_edges = ExtractedEdges(**chunk_response).edges
-                all_edges_data.extend(chunk_edges)
-            except Exception:
-                logger.error('Failed to extract edges from node chunk', exc_info=True)
-                raise
+            # Failures propagate, as in the single-call path
+            chunk_response = await generate_prompt_response(
+                llm_client,
+                'extract_edges.edge',
+                prompt_library.extract_edges.edge,
+                chunk_context,
+                clients=clients,
+                response_model=ExtractedEdges,
+                max_tokens=extract_edges_max_tokens,
+                group_id=group_id or primary_episode.group_id,
+            )
+            all_edges_data.extend(ExtractedEdges(**chunk_response).edges)
 
-        # Dedup edges by (source_uuid, target_uuid, normalized_fact)
+        # Pairs shared by several chunks can yield the same edge more than once. Unknown
+        # entity names are kept and handled downstream, as for single-call output.
+        raw_count = len(all_edges_data)
         deduped_edges: list[ExtractedEdge] = []
         seen_keys: set[tuple[str, str, str]] = set()
         for edge_data in all_edges_data:
-            src_name = edge_data.source_entity_name
-            tgt_name = edge_data.target_entity_name
-            if src_name in name_to_node and tgt_name in name_to_node:
-                src_uuid = name_to_node[src_name].uuid
-                tgt_uuid = name_to_node[tgt_name].uuid
-                fact_norm = _normalize_string_exact(edge_data.fact)
-                key = (src_uuid, tgt_uuid, fact_norm)
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    deduped_edges.append(edge_data)
-            # Drop edges referencing nodes not in the original nodes list
+            key = (
+                edge_data.source_entity_name,
+                edge_data.target_entity_name,
+                _normalize_string_exact(edge_data.fact),
+            )
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_edges.append(edge_data)
         all_edges_data = deduped_edges
 
         logger.debug(
-            'extract_edges: covering-chunk %d/%d chunks, %d raw -> %d deduped',
-            len(chunks),
+            'extract_edges: %d nodes in %d covering chunks of <=%d, %d raw -> %d deduped edges',
             len(nodes),
-            len(all_edges_data),
+            len(chunks),
+            k,
+            raw_count,
             len(all_edges_data),
         )
     else:
