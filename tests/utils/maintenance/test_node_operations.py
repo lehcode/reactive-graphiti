@@ -1012,29 +1012,6 @@ async def test_build_budget_flights_falls_back_when_no_budget():
 
 
 @pytest.mark.asyncio
-async def test_build_budget_flights_uses_budget_when_available(monkeypatch):
-    """When budget is an int, _build_budget_flights respects it via pack_by_budget.
-
-    Uses a tight budget (300 tokens) so even the fixed prompt cost (~690) exceeds it.
-    pack_by_budget guarantees ≥ 1 item per batch, forcing one-node batches.
-    """
-    from graphiti_core.utils.maintenance.node_operations import _build_budget_flights
-
-    llm_client = MagicMock()
-    llm_client.input_token_budget.return_value = 300
-
-    nodes = [
-        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 500)
-        for i in range(5)
-    ]
-
-    flights = _build_budget_flights(nodes, 10, llm_client)
-    # Budget (300) << fixed_cost (~690) → pack_by_budget forces 1 node/batch
-    assert len(flights) == 5
-    assert all(len(f) == 1 for f in flights)
-
-
-@pytest.mark.asyncio
 async def test_build_budget_flights_respects_max_items(monkeypatch):
     """max_items parameter caps the number of nodes per flight."""
     from graphiti_core.utils.content_chunking import estimate_tokens

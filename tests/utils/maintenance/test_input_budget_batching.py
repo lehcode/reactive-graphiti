@@ -377,18 +377,32 @@ def _budget_episode(content: str) -> EpisodicNode:
 def test_flights_count_episode_content_as_fixed_cost():
     nodes = _summary_nodes(12)
     llm_client = _llm_client(None)
-    # Room for all 12 nodes next to a short episode; a ~5000-token episode alone exceeds it
-    llm_client.input_token_budget.return_value = 4000
+    # Fixed cost ~700 tokens with the short episode, ~2200 with the long one; nodes ~23 each
+    llm_client.input_token_budget.return_value = 2300
     short = node_operations._build_budget_flights(
         nodes, 30, llm_client, episode=_budget_episode('Short.')
     )
     long = node_operations._build_budget_flights(
-        nodes, 30, llm_client, episode=_budget_episode('Long sentence here. ' * 1000)
+        nodes, 30, llm_client, episode=_budget_episode('Long sentence here. ' * 300)
     )
 
     assert len(short) == 1
     assert len(long) > 1
     assert [n.uuid for flight in long for n in flight] == [n.uuid for n in nodes]
+
+
+def test_flights_not_multiplied_when_episode_alone_exceeds_budget(caplog):
+    nodes = _summary_nodes(12)
+    llm_client = _llm_client(1000)
+
+    with caplog.at_level(logging.WARNING):
+        flights = node_operations._build_budget_flights(
+            nodes, 5, llm_client, episode=_budget_episode('Long sentence here. ' * 1000)
+        )
+
+    # Same flights as without a budget: each extra flight would resend the episode
+    assert [len(flight) for flight in flights] == [5, 5, 2]
+    assert 'exceeds the input-token budget' in caplog.text
 
 
 def test_flights_measure_the_episode_prompt_when_it_is_sent(monkeypatch):

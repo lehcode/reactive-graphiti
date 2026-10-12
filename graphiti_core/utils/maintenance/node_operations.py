@@ -142,6 +142,16 @@ def _build_budget_flights(
         estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
     )
     fixed_cost += estimate_tokens(json.dumps(SummarizedEntities.model_json_schema()))
+    if fixed_cost >= budget:
+        # No flight can fit; more flights would only resend the oversized episode
+        logger.warning(
+            'Summary prompt without entities (%d tokens) exceeds the input-token budget %d; '
+            'using flights of %d',
+            fixed_cost,
+            budget,
+            max_items,
+        )
+        return [nodes[i : i + max_items] for i in range(0, len(nodes), max_items)]
 
     return pack_by_budget(
         nodes,
