@@ -41,6 +41,7 @@ from graphiti_core.prompts.extract_nodes import (
     ExtractedEntity,
     SummarizedEntities,
 )
+from graphiti_core.prompts.names import PromptName
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import node_similarity_search
 from graphiti_core.utils.content_chunking import estimate_tokens
@@ -70,55 +71,88 @@ MAX_NODES = 30
 NODE_DEDUP_CANDIDATE_LIMIT = 15
 
 
+def _summary_prompt(use_episode_prompt: bool) -> tuple[PromptName, Any]:
+    """Prompt name and builder a summary flight sends."""
+    if use_episode_prompt:
+        return (
+            'extract_nodes.extract_entity_summaries_from_episodes',
+            prompt_library.extract_nodes.extract_entity_summaries_from_episodes,
+        )
+    return (
+        'extract_nodes.extract_summaries_batch',
+        prompt_library.extract_nodes.extract_summaries_batch,
+    )
+
+
+def _summary_type_descriptions(entity_types: dict[str, type[BaseModel]] | None) -> dict[str, str]:
+    # Docstrings without the GOOD/BAD few-shot examples meant for extraction prompts
+    descriptions: dict[str, str] = {}
+    if entity_types is not None:
+        for type_name, type_model in entity_types.items():
+            if type_model.__doc__:
+                descriptions[type_name] = _truncate_type_description(type_model.__doc__)
+    return descriptions
+
+
+def _summary_entity_entry(node: EntityNode) -> dict[str, Any]:
+    return {
+        'name': node.name,
+        'summary': node.summary,
+        'entity_types': node.labels,
+        'attributes': node.attributes,
+    }
+
+
+def _summary_episode_content(episode: EpisodicNode | list[EpisodicNode] | None) -> str:
+    if episode is None:
+        return ''
+    if isinstance(episode, list):
+        return concatenate_episodes(episode)
+    return episode.content
+
+
 def _build_budget_flights(
     nodes: list[EntityNode],
     max_items: int,
     llm_client: LLMClient,
     *,
+    episode: EpisodicNode | list[EpisodicNode] | None = None,
     entity_types: dict[str, type[BaseModel]] | None = None,
+    use_episode_prompt: bool = False,
 ) -> list[list[EntityNode]]:
-    """Partition nodes into flights respecting the input-token budget."""
-    entity_type_descriptions: dict[str, str] = {}
-    if entity_types is not None:
-        for type_name, type_model in entity_types.items():
-            if type_model.__doc__:
-                entity_type_descriptions[type_name] = _truncate_type_description(type_model.__doc__)
+    """Partition nodes into flights of at most ``max_items`` that fit the input-token budget.
+
+    Every flight sends the episode content and type descriptions, so they count as fixed
+    cost; previous episodes are filled per flight from what remains.
+    """
     budget = llm_client.input_token_budget()
     if not isinstance(budget, int):
-        # No budget → fall back to fixed-size flights
         return [nodes[i : i + max_items] for i in range(0, len(nodes), max_items)]
 
-    # Per-node cost: estimated tokens of serialized entity dict in prompt
-    def _node_cost(node: EntityNode) -> int:
-        entry = {
-            'name': node.name,
-            'summary': node.summary,
-            'entity_types': node.labels,
-            'attributes': node.attributes,
+    _, prompt_builder = _summary_prompt(use_episode_prompt)
+    messages = prompt_builder(
+        {
+            'entities': [],
+            'episode_content': _summary_episode_content(episode),
+            'previous_episodes': [],
+            'entity_type_descriptions': _summary_type_descriptions(entity_types),
         }
-        return estimate_tokens(json.dumps(entry))
-
-    # Fixed cost: render prompt with empty entities + schema + episode/type descriptions
-    base_batch_context: dict[str, Any] = {
-        'entities': [],
-        'episode_content': '',
-        'previous_episodes': [],
-        'entity_type_descriptions': entity_type_descriptions,
-    }
-
-    messages = prompt_library.extract_nodes.extract_summaries_batch(base_batch_context)
-    fixed_cost = sum(estimate_tokens(m.content) for m in messages)
+    )
+    fixed_cost = sum(
+        estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
+    )
     fixed_cost += estimate_tokens(json.dumps(SummarizedEntities.model_json_schema()))
 
-    batches = pack_by_budget(
+    return pack_by_budget(
         nodes,
-        cost=_node_cost,
+        # default=str: graph-hydrated attributes can hold datetimes or driver temporal types
+        cost=lambda node: estimate_tokens(
+            json.dumps(_summary_entity_entry(node), ensure_ascii=False, default=str)
+        ),
         budget=budget,
         fixed_cost=fixed_cost,
         max_items=max_items,
     )
-
-    return batches
 
 
 NODE_DEDUP_COSINE_MIN_SCORE = 0.6
@@ -1090,7 +1124,9 @@ async def _extract_entity_summaries_batch(
         nodes_needing_llm,
         MAX_NODES,
         llm_client,
+        episode=episode,
         entity_types=entity_types,
+        use_episode_prompt=skip_fact_appending,
     )
 
     # Process flights in parallel
@@ -1121,31 +1157,10 @@ async def _process_summary_flight(
     clients: GraphitiClients | None = None,
 ) -> None:
     """Process a single flight of nodes for batch summarization."""
-    # Build entity type descriptions from docstrings, stripping GOOD/BAD
-    # few-shot examples that are intended for extraction prompts only.
-    entity_type_descriptions: dict[str, str] = {}
-    if entity_types is not None:
-        for type_name, type_model in entity_types.items():
-            if type_model.__doc__:
-                entity_type_descriptions[type_name] = _truncate_type_description(type_model.__doc__)
-
-    # Build context for batch summarization
-    entities_context = [
-        {
-            'name': node.name,
-            'summary': node.summary,
-            'entity_types': node.labels,
-            'attributes': node.attributes,
-        }
-        for node in nodes
-    ]
-
-    if episode is None:
-        episode_content = ''
-    elif isinstance(episode, list):
-        episode_content = concatenate_episodes(episode)
-    else:
-        episode_content = episode.content
+    entity_type_descriptions = _summary_type_descriptions(entity_types)
+    entities_context = [_summary_entity_entry(node) for node in nodes]
+    episode_content = _summary_episode_content(episode)
+    prompt_name, legacy_prompt = _summary_prompt(use_episode_prompt)
 
     # Base context without episodes for budget estimation
     base_batch_context: dict[str, Any] = {
@@ -1159,7 +1174,7 @@ async def _process_summary_flight(
     if previous_episodes is not None:
         budget_tokens = remaining_budget_for_previous_episodes(
             llm_client,
-            prompt_library.extract_nodes.extract_summaries_batch,
+            legacy_prompt,
             base_batch_context,
             response_model=SummarizedEntities,
         )
@@ -1180,13 +1195,6 @@ async def _process_summary_flight(
 
     # Get group_id from the first node (all nodes in a batch should have same group_id)
     group_id = nodes[0].group_id if nodes else None
-
-    if use_episode_prompt:
-        legacy_prompt = prompt_library.extract_nodes.extract_entity_summaries_from_episodes
-        prompt_name = 'extract_nodes.extract_entity_summaries_from_episodes'
-    else:
-        legacy_prompt = prompt_library.extract_nodes.extract_summaries_batch
-        prompt_name = 'extract_nodes.extract_summaries_batch'
 
     llm_response = await generate_prompt_response(
         llm_client,

@@ -59,6 +59,11 @@ from graphiti_core.utils.token_budget import pack_by_budget
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on sequential LLM calls when edge extraction is split into covering chunks.
+# Covering all node pairs needs about n^2 / k^2 chunks, which grows fast when the budget
+# leaves room for few nodes; beyond this bound one over-budget call is sent instead.
+MAX_EDGE_EXTRACTION_CHUNKS = 16
+
 
 def build_episodic_edges(
     entity_nodes: list[EntityNode],
@@ -220,6 +225,7 @@ async def extract_edges(
 
     # Covering chunks only when the nodes do not fit next to the fixed prompt
     node_costs = [_node_cost(n) for n in nodes]
+    chunks: list[tuple[list[EntityNode], list[int]]] | None = None
     if (
         isinstance(input_budget, int)
         and len(nodes) > 2
@@ -237,7 +243,17 @@ async def extract_edges(
             )
         k = min(max(k, 2), len(nodes) - 1)
         chunks = generate_covering_chunks(nodes, k)
-
+        if len(chunks) > MAX_EDGE_EXTRACTION_CHUNKS:
+            logger.warning(
+                'extract_edges: %d nodes need %d covering chunks of %d (limit %d); '
+                'sending one call over the input-token budget instead',
+                len(nodes),
+                len(chunks),
+                k,
+                MAX_EDGE_EXTRACTION_CHUNKS,
+            )
+            chunks = None
+    if chunks is not None:
         # Issue LLM call for each chunk and collect all edges
         all_edges_data: list[ExtractedEdge] = []
         for _chunk_items, chunk_indices in chunks:
@@ -895,6 +911,20 @@ async def resolve_extracted_edge(
         trimmed_invalidation_edges = [
             existing_edges[c['idx'] - invalidation_idx_offset] for c in trimmed_invalidation
         ]
+
+        dropped_related = len(related_edges) - len(trimmed_related_edges)
+        dropped_invalidation = len(existing_edges) - len(trimmed_invalidation_edges)
+        if dropped_related or dropped_invalidation:
+            # Dropped candidates cannot be marked duplicate or contradicted by this call
+            logger.debug(
+                'resolve_extracted_edge: input-token budget %d dropped %d of %d EXISTING FACTS '
+                'and %d of %d INVALIDATION CANDIDATES (lowest ranked)',
+                input_budget,
+                dropped_related,
+                len(related_edges),
+                dropped_invalidation,
+                len(existing_edges),
+            )
 
         invalidation_idx_offset = len(trimmed_related_edges)
         related_edges = trimmed_related_edges
