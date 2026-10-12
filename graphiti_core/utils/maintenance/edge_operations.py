@@ -220,8 +220,9 @@ async def extract_edges(
 
     # Budget-aware covering chunks
     if isinstance(input_budget, int) and len(nodes) > 1 and input_budget > fixed_cost:
-        # Calculate max nodes per chunk
-        k = max(2, min(30, input_budget // max(_node_cost(nodes[0]), 1)))
+        # Calculate max nodes per chunk using remaining budget after fixed cost
+        remaining_budget = input_budget - fixed_cost
+        k = max(2, min(30, remaining_budget // max(_node_cost(nodes[0]), 1)))
         chunks = generate_covering_chunks(nodes, k)
 
         # Issue LLM call for each chunk and collect all edges
@@ -260,7 +261,8 @@ async def extract_edges(
                 chunk_edges = ExtractedEdges(**chunk_response).edges
                 all_edges_data.extend(chunk_edges)
             except Exception:
-                logger.warning('Failed to extract edges from node chunk', exc_info=True)
+                logger.error('Failed to extract edges from node chunk', exc_info=True)
+                raise
 
         # Dedup edges by (source_uuid, target_uuid, normalized_fact)
         deduped_edges: list[ExtractedEdge] = []
@@ -888,13 +890,6 @@ async def resolve_extracted_edge(
         invalidation_idx_offset = len(trimmed_related_edges)
         related_edges = trimmed_related_edges
         existing_edges = trimmed_invalidation_edges
-
-        if related_edges_context or invalidation_edge_candidates_context:
-            logger.debug(
-                'Resolving edge (budget-trimmed): sent %d EXISTING FACTS and %d INVALIDATION CANDIDATES',
-                len(related_edges_context),
-                len(invalidation_edge_candidates_context),
-            )
 
     context = {
         'existing_edges': related_edges_context,
