@@ -196,6 +196,23 @@ def test_top_level_limit_is_not_read():
     )
 
 
+@pytest.mark.parametrize(
+    'api_key, expected_headers',
+    [(None, {}), ('', {}), ('k', {'Authorization': 'Bearer k'})],
+)
+def test_authorization_header_only_with_api_key(api_key, expected_headers):
+    body = json.dumps(
+        {'data': [{'model_name': 'gpt-4', 'model_info': {'max_input_tokens': 8000}}]}
+    ).encode()
+    client = MagicMock()
+    client.get.return_value = httpx.Response(200, content=body)
+
+    assert resolve_max_input_tokens('http://proxy:4000', api_key, 'gpt-4', None, client=client) == (
+        8000
+    )
+    assert client.get.call_args.kwargs['headers'] == expected_headers
+
+
 def test_core_llm_config_support_check():
     """Fork LLMConfig accepts max_input_tokens; upstream-style LLMConfig does not."""
 

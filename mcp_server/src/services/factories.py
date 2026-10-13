@@ -100,7 +100,7 @@ except ImportError:
 
 def resolve_max_input_tokens(
     api_url: str | None,
-    api_key: str,
+    api_key: str | None,
     model: str,
     configured: int | None,
     *,
@@ -143,7 +143,7 @@ def resolve_max_input_tokens(
 
     lite_value: int | None = None
     try:
-        headers = {'Authorization': f'Bearer {api_key}'}
+        headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
         # Use the injectable client (sync for compatibility), or a short-lived one
         if client is None:
             import httpx
