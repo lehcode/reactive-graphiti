@@ -1191,7 +1191,12 @@ class Graphiti:
             Parts are named ``'{name} (part i/N)'`` and join the saga named by
             ``saga`` (or a new saga named ``name`` if no saga was given).  If the
             chunker returns a single part the original body is processed normally
-            (no recursion).
+            (no recursion).  Splitting is active whenever the LLM client reports an
+            input-token budget; raise ``EPISODE_CONTENT_BUDGET_RATIO`` to split less often.
+
+            Parts are persisted one at a time and are not rolled back.  If part ``k``
+            fails, parts ``1..k-1`` remain in the graph and the exception propagates;
+            retrying the same call adds those parts again as new episodes.
 
         It is recommended to run this method as a background process, such as in a queue.
         It's important that each episode is added sequentially and awaited before adding
@@ -1212,41 +1217,41 @@ class Graphiti:
             and estimate_tokens(episode_body) > EPISODE_CONTENT_BUDGET_RATIO * budget
         ):
             return await self._add_episode_split(
-                name,
-                episode_body,
-                source_description,
-                reference_time,
-                source,
-                group_id,
-                update_communities,
-                entity_types,
-                excluded_entity_types,
-                previous_episode_uuids,
-                edge_types,
-                edge_type_map,
-                custom_extraction_instructions,
-                saga,
-                saga_previous_episode_uuid,
-                budget,
+                name=name,
+                episode_body=episode_body,
+                source_description=source_description,
+                reference_time=reference_time,
+                source=source,
+                group_id=group_id,
+                update_communities=update_communities,
+                entity_types=entity_types,
+                excluded_entity_types=excluded_entity_types,
+                previous_episode_uuids=previous_episode_uuids,
+                edge_types=edge_types,
+                edge_type_map=edge_type_map,
+                custom_extraction_instructions=custom_extraction_instructions,
+                saga=saga,
+                saga_previous_episode_uuid=saga_previous_episode_uuid,
+                budget=budget,
             )
 
         return await self._add_episode_internal(
-            name,
-            episode_body,
-            source_description,
-            reference_time,
-            source,
-            group_id,
-            uuid,
-            update_communities,
-            entity_types,
-            excluded_entity_types,
-            previous_episode_uuids,
-            edge_types,
-            edge_type_map,
-            custom_extraction_instructions,
-            saga,
-            saga_previous_episode_uuid,
+            name=name,
+            episode_body=episode_body,
+            source_description=source_description,
+            reference_time=reference_time,
+            source=source,
+            group_id=group_id,
+            uuid=uuid,
+            update_communities=update_communities,
+            entity_types=entity_types,
+            excluded_entity_types=excluded_entity_types,
+            previous_episode_uuids=previous_episode_uuids,
+            edge_types=edge_types,
+            edge_type_map=edge_type_map,
+            custom_extraction_instructions=custom_extraction_instructions,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
         )
 
     async def _add_episode_internal(
@@ -1478,22 +1483,22 @@ class Graphiti:
         # If chunker returns a single part, process normally (no recursion)
         if num_parts == 1:
             return await self._add_episode_internal(
-                name,
-                episode_body,
-                source_description,
-                reference_time,
-                source,
-                group_id,
-                None,
-                update_communities,
-                entity_types,
-                excluded_entity_types,
-                previous_episode_uuids,
-                edge_types,
-                edge_type_map,
-                custom_extraction_instructions,
-                saga,
-                saga_previous_episode_uuid,
+                name=name,
+                episode_body=episode_body,
+                source_description=source_description,
+                reference_time=reference_time,
+                source=source,
+                group_id=group_id,
+                uuid=None,
+                update_communities=update_communities,
+                entity_types=entity_types,
+                excluded_entity_types=excluded_entity_types,
+                previous_episode_uuids=previous_episode_uuids,
+                edge_types=edge_types,
+                edge_type_map=edge_type_map,
+                custom_extraction_instructions=custom_extraction_instructions,
+                saga=saga,
+                saga_previous_episode_uuid=saga_previous_episode_uuid,
             )
 
         part_saga = saga if saga is not None else name
