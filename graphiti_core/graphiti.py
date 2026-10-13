@@ -42,6 +42,7 @@ from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
 from graphiti_core.graphiti_types import GraphitiClients, generate_prompt_response
 from graphiti_core.helpers import (
+    EPISODE_CONTENT_BUDGET_RATIO,
     PREVIOUS_EPISODE_LIMIT,
     get_default_group_id,
     semaphore_gather,
@@ -87,6 +88,13 @@ from graphiti_core.utils.bulk_utils import (
     extract_nodes_and_edges_bulk,
     resolve_edge_pointers,
     retrieve_previous_episodes_bulk,
+)
+from graphiti_core.utils.content_chunking import (
+    CHUNK_OVERLAP_TOKENS,
+    chunk_json_content,
+    chunk_message_content,
+    chunk_text_content,
+    estimate_tokens,
 )
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.utils.maintenance.community_operations import (
@@ -1162,13 +1170,28 @@ class Graphiti:
 
         Returns
         -------
-        None
+        AddEpisodeResults
+            The results of the operation. If the episode body exceeds the configured
+            input-token budget (see :data:`helpers.EPISODE_CONTENT_BUDGET_RATIO`), the
+            body is split into sequential parts processed as a saga; the returned
+            ``episode`` is the last part's episode, while ``nodes`` and ``edges`` are
+            deduplicated by UUID keeping the last occurrence. All other fields are
+            concatenated across parts.
 
         Notes
         -----
-        This method performs several steps including node extraction, edge extraction,
-        deduplication, and database updates. It also handles embedding generation
-        and edge invalidation.
+        Oversized-episode splitting
+            When all of the following hold the body is auto-chunked and the parts are
+            processed sequentially as a saga:
+
+            * ``uuid is None`` (never splits re-processing of existing episodes),
+            * ``self.llm_client.input_token_budget()`` returns an ``int``,
+            * ``estimate_tokens(episode_body) > EPISODE_CONTENT_BUDGET_RATIO * budget``.
+
+            Parts are named ``'{name} (part i/N)'`` and join the saga named by
+            ``saga`` (or a new saga named ``name`` if no saga was given).  If the
+            chunker returns a single part the original body is processed normally
+            (no recursion).
 
         It is recommended to run this method as a background process, such as in a queue.
         It's important that each episode is added sequentially and awaited before adding
@@ -1181,6 +1204,71 @@ class Graphiti:
                 background_tasks.add_task(graphiti.add_episode, **episode_data.dict())
                 return {"message": "Episode processing started"}
         """
+        # Oversized bodies are split into a saga; re-processing an existing episode never is.
+        budget = self.llm_client.input_token_budget()
+        if (
+            isinstance(budget, int)
+            and uuid is None
+            and estimate_tokens(episode_body) > EPISODE_CONTENT_BUDGET_RATIO * budget
+        ):
+            return await self._add_episode_split(
+                name,
+                episode_body,
+                source_description,
+                reference_time,
+                source,
+                group_id,
+                update_communities,
+                entity_types,
+                excluded_entity_types,
+                previous_episode_uuids,
+                edge_types,
+                edge_type_map,
+                custom_extraction_instructions,
+                saga,
+                saga_previous_episode_uuid,
+                budget,
+            )
+
+        return await self._add_episode_internal(
+            name,
+            episode_body,
+            source_description,
+            reference_time,
+            source,
+            group_id,
+            uuid,
+            update_communities,
+            entity_types,
+            excluded_entity_types,
+            previous_episode_uuids,
+            edge_types,
+            edge_type_map,
+            custom_extraction_instructions,
+            saga,
+            saga_previous_episode_uuid,
+        )
+
+    async def _add_episode_internal(
+        self,
+        name: str,
+        episode_body: str,
+        source_description: str,
+        reference_time: datetime,
+        source: EpisodeType,
+        group_id: str | None,
+        uuid: str | None,
+        update_communities: bool,
+        entity_types: dict[str, type[BaseModel]] | None,
+        excluded_entity_types: list[str] | None,
+        previous_episode_uuids: list[str] | None,
+        edge_types: dict[str, type[BaseModel]] | None,
+        edge_type_map: dict[tuple[str, str], list[str]] | None,
+        custom_extraction_instructions: str | None,
+        saga: str | SagaNode | None,
+        saga_previous_episode_uuid: str | None,
+    ) -> AddEpisodeResults:
+        """Process a single episode (internal, no splitting)."""
         start = time()
         now = utc_now()
 
@@ -1346,6 +1434,134 @@ class Graphiti:
                 span.set_status('error', str(e))
                 span.record_exception(e)
                 raise e
+
+    async def _add_episode_split(
+        self,
+        name: str,
+        episode_body: str,
+        source_description: str,
+        reference_time: datetime,
+        source: EpisodeType,
+        group_id: str | None,
+        update_communities: bool,
+        entity_types: dict[str, type[BaseModel]] | None,
+        excluded_entity_types: list[str] | None,
+        previous_episode_uuids: list[str] | None,
+        edge_types: dict[str, type[BaseModel]] | None,
+        edge_type_map: dict[tuple[str, str], list[str]] | None,
+        custom_extraction_instructions: str | None,
+        saga: str | SagaNode | None,
+        saga_previous_episode_uuid: str | None,
+        budget: int,
+    ) -> AddEpisodeResults:
+        """Split an oversized episode body into parts and process sequentially.
+
+        Each part is named ``'{name} (part i/N)'``.  Parts join ``saga`` if the
+        caller provided one; otherwise a saga named ``name`` is created.
+        """
+        ratio = EPISODE_CONTENT_BUDGET_RATIO
+        # The chunkers treat 0 as "use the env default", so keep both sizes positive.
+        chunk_size = max(1, int(ratio * budget))
+        overlap = max(1, min(CHUNK_OVERLAP_TOKENS, chunk_size // 10))
+
+        # Choose chunker by source type
+        if source == EpisodeType.json:
+            chunker = chunk_json_content
+        elif source == EpisodeType.message:
+            chunker = chunk_message_content
+        else:
+            chunker = chunk_text_content
+
+        parts = chunker(episode_body, chunk_size, overlap)
+        num_parts = len(parts)
+
+        # If chunker returns a single part, process normally (no recursion)
+        if num_parts == 1:
+            return await self._add_episode_internal(
+                name,
+                episode_body,
+                source_description,
+                reference_time,
+                source,
+                group_id,
+                None,
+                update_communities,
+                entity_types,
+                excluded_entity_types,
+                previous_episode_uuids,
+                edge_types,
+                edge_type_map,
+                custom_extraction_instructions,
+                saga,
+                saga_previous_episode_uuid,
+            )
+
+        part_saga = saga if saga is not None else name
+        prev_uuids = list(previous_episode_uuids) if previous_episode_uuids is not None else None
+
+        # Log once when splitting
+        logger.info(
+            f'Splitting episode "{name}": estimated_tokens={estimate_tokens(episode_body)}, '
+            f'budget={budget}, threshold={int(ratio * budget)}, parts={num_parts}'
+        )
+
+        results: list[AddEpisodeResults] = []
+        for i, part_body in enumerate(parts):
+            part_name = f'{name} (part {i + 1}/{num_parts})'
+            part_saga_previous = saga_previous_episode_uuid if i == 0 else results[-1].episode.uuid
+            part_results = await self._add_episode_internal(
+                name=part_name,
+                episode_body=part_body,
+                source_description=source_description,
+                reference_time=reference_time,
+                source=source,
+                group_id=group_id,
+                uuid=None,
+                update_communities=update_communities,
+                entity_types=entity_types,
+                excluded_entity_types=excluded_entity_types,
+                previous_episode_uuids=list(prev_uuids) if prev_uuids is not None else None,
+                edge_types=edge_types,
+                edge_type_map=edge_type_map,
+                custom_extraction_instructions=custom_extraction_instructions,
+                saga=part_saga,
+                saga_previous_episode_uuid=part_saga_previous,
+            )
+            results.append(part_results)
+
+            # Accumulate previous-episode uuids for subsequent parts
+            if prev_uuids is not None:
+                prev_uuids.append(part_results.episode.uuid)
+
+        # Aggregate: concatenate, dedup (keep last in first-seen order)
+        episodic_edges: list[EpisodicEdge] = []
+        communities: list[CommunityNode] = []
+        community_edges: list[CommunityEdge] = []
+
+        node_dedup: dict[str, EntityNode] = {}
+        for r in results:
+            episodic_edges.extend(r.episodic_edges)
+            communities.extend(r.communities)
+            community_edges.extend(r.community_edges)
+            for node in r.nodes:
+                node_dedup[node.uuid] = node
+
+        edge_dedup: dict[str, EntityEdge] = {}
+        for r in results:
+            for edge in r.edges:
+                edge_dedup[edge.uuid] = edge
+
+        nodes = list(node_dedup.values())
+        edges = list(edge_dedup.values())
+
+        return AddEpisodeResults(
+            episode=results[-1].episode,
+            episodic_edges=episodic_edges,
+            nodes=nodes,
+            edges=edges,
+            communities=communities,
+            community_edges=community_edges,
+        )
 
     async def add_episode_bulk(
         self,

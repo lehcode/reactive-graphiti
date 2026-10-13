@@ -64,6 +64,22 @@ except (ValueError, TypeError):
     )
     INPUT_TOKEN_SAFETY_RATIO = 0.8
 
+# Episode content budget ratio for oversized-episode splitting.
+# Applied to max_input_tokens to produce the threshold above which an episode
+# body is auto-chunked and processed as a saga.
+# Invalid or out-of-range values default to 0.4 with a warning.
+try:
+    _ratio = float(os.getenv('EPISODE_CONTENT_BUDGET_RATIO', '0.4'))
+    if not (0 < _ratio <= 1):
+        raise ValueError('out of (0, 1]')
+    EPISODE_CONTENT_BUDGET_RATIO = _ratio
+except (ValueError, TypeError):
+    logger = logging.getLogger('graphiti_core')
+    logger.warning(
+        f'Invalid EPISODE_CONTENT_BUDGET_RATIO={os.getenv("EPISODE_CONTENT_BUDGET_RATIO", "0.4")} '
+        '(must be a float in (0, 1]); defaulting to 0.4'
+    )
+    EPISODE_CONTENT_BUDGET_RATIO = 0.4
 
 # Content chunking configuration for entity extraction
 # Density-based chunking: only chunk high-density content (many entities per token)
