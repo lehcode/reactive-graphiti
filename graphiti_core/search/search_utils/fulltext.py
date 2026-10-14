@@ -20,6 +20,12 @@ from graphiti_core.driver.driver import GraphDriver, GraphProvider
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
 from graphiti_core.graph_queries import get_nodes_query, get_relationships_query
 from graphiti_core.helpers import lucene_sanitize, validate_group_ids
+from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
+from graphiti_core.models.nodes.node_db_queries import (
+    COMMUNITY_NODE_RETURN,
+    EPISODIC_NODE_RETURN,
+    get_entity_node_return_query,
+)
 from graphiti_core.nodes import (
     CommunityNode,
     EntityNode,
@@ -164,50 +170,31 @@ async def edge_fulltext_search(
         # Kuzu: `e` is a RelatesToNode_ node (intermediate node for relationships).
         # Its `attributes` is a stored column, so direct reference works.
         query = (
-            get_relationships_query('edge_name_and_fact', limit, driver.provider)
+            get_relationships_query('edge_name_and_fact', limit=limit, provider=driver.provider)
             + match_query
             + filter_query
             + """
             RETURN
-                e.uuid AS uuid,
-                e.group_id AS group_id,
-                n.uuid AS source_node_uuid,
-                m.uuid AS target_node_uuid,
-                e.created_at AS created_at,
-                e.name AS name,
-                e.fact AS fact,
-                e.episodes AS episodes,
-                e.expired_at AS expired_at,
-                e.valid_at AS valid_at,
-                e.invalid_at AS invalid_at,
-                e.attributes AS attributes,
-                score
+            """
+            + get_entity_edge_return_query(driver.provider)
+            + """
             ORDER BY score DESC
             LIMIT $limit
             """
         )
     else:
         # Neo4j / FalkorDB: `e` is a RELATES_TO relationship.
-        # `e.attributes` is NULL — use `properties(e)` to get all relationship properties.
+        # Use `get_entity_edge_return_query` to handle provider-specific return fields.
         query = (
-            get_relationships_query('edge_name_and_fact', limit, driver.provider)
+            get_relationships_query('edge_name_and_fact', limit=limit, provider=driver.provider)
             + match_query
             + filter_query
             + """
+            WITH e, score, n, m
             RETURN
-                e.uuid AS uuid,
-                e.group_id AS group_id,
-                n.uuid AS source_node_uuid,
-                m.uuid AS target_node_uuid,
-                e.created_at AS created_at,
-                e.name AS name,
-                e.fact AS fact,
-                e.episodes AS episodes,
-                e.expired_at AS expired_at,
-                e.valid_at AS valid_at,
-                e.invalid_at AS invalid_at,
-                properties(e) AS attributes,
-                score
+            """
+            + get_entity_edge_return_query(driver.provider)
+            + """
             ORDER BY score DESC
             LIMIT $limit
             """
@@ -306,40 +293,27 @@ async def node_fulltext_search(
             + filter_query
             + """
             RETURN
-                n.uuid AS uuid,
-                n.group_id AS group_id,
-                n.name AS name,
-                n.summary AS summary,
-                n.created_at AS created_at,
-                n.labels AS labels,
-                n.attributes AS attributes,
-                score
+            """
+            + get_entity_node_return_query(driver.provider)
+            + """
             ORDER BY score DESC
             LIMIT $limit
             """
         )
     else:
         # Neo4j / FalkorDB: the fulltext CALL yields an Entity node aliased to `node`.
-        # `node.attributes` may be NULL in some providers — use `properties(node)`.
+        yield_query = 'YIELD node AS n, score'
         query = (
             get_nodes_query('node_name_and_summary', '$query', limit, driver.provider)
-            + """
-            WITH node AS n, score
-            """
+            + yield_query
             + filter_query
             + """
-            RETURN
-                n.uuid AS uuid,
-                n.group_id AS group_id,
-                n.name AS name,
-                n.summary AS summary,
-                n.created_at AS created_at,
-                labels(n) AS labels,
-                properties(n) AS attributes,
-                score
+            WITH n, score
             ORDER BY score DESC
             LIMIT $limit
+            RETURN
             """
+            + get_entity_node_return_query(driver.provider)
         )
 
     records, _, _ = await driver.execute_query(
@@ -376,23 +350,22 @@ async def community_fulltext_search(
         filter_query = ' WHERE c.group_id IN $group_ids'
         filter_params['group_ids'] = group_ids
 
+    yield_query = 'YIELD node AS c, score'
+    if driver.provider == GraphProvider.KUZU:
+        yield_query = 'WITH node AS c, score'
+
     records, _, _ = await driver.execute_query(
-        get_nodes_query('community_name_and_summary', '$query', limit, driver.provider)
+        get_nodes_query('community_name', '$query', limit, driver.provider)
+        + yield_query
         + """
-        WITH node AS c, score
+        WITH c, score
         """
         + filter_query
         + """
         RETURN
-            c.uuid AS uuid,
-            c.group_id AS group_id,
-            c.name AS name,
-            c.summary AS summary,
-            c.created_at AS created_at,
-            c.explanation AS explanation,
-            c.full_summary AS full_summary,
-            c.level AS level,
-            score
+        """
+        + COMMUNITY_NODE_RETURN
+        + """
         ORDER BY score DESC
         LIMIT $limit
         """,
@@ -426,24 +399,23 @@ async def episode_fulltext_search(
     filter_query = ''
     filter_params = {}
     if group_ids is not None:
-        filter_query = ' WHERE e.group_id IN $group_ids'
+        # Follows `WHERE e.uuid = episode.uuid` in the query below, so extend it with AND.
+        filter_query = '\nAND e.group_id IN $group_ids'
         filter_params['group_ids'] = group_ids
 
     records, _, _ = await driver.execute_query(
         get_nodes_query('episode_content', '$query', limit, driver.provider)
         + """
-        WITH node AS e, score
+        YIELD node AS episode, score
+        MATCH (e:Episodic)
+        WHERE e.uuid = episode.uuid
         """
         + filter_query
         + """
         RETURN
-            e.uuid AS uuid,
-            e.group_id AS group_id,
-            e.name AS name,
-            e.content AS content,
-            e.created_at AS created_at,
-            e.valid_at AS valid_at,
-            score
+        """
+        + EPISODIC_NODE_RETURN
+        + """
         ORDER BY score DESC
         LIMIT $limit
         """,

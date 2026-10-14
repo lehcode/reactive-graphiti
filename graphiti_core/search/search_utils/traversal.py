@@ -18,6 +18,7 @@ import logging
 
 from graphiti_core.driver.driver import GraphDriver, GraphProvider
 from graphiti_core.edges import EntityEdge, get_entity_edge_from_record
+from graphiti_core.models.edges.edge_db_queries import get_entity_edge_return_query
 from graphiti_core.nodes import EntityNode, get_entity_node_from_record
 from graphiti_core.search.search_filters import (
     SearchFilters,
@@ -62,64 +63,49 @@ async def edge_bfs_search(
         filter_query = ' WHERE ' + (' AND '.join(filter_queries))
 
     if driver.provider == GraphProvider.KUZU:
+        depth = bfs_max_depth * 2 - 1
         query = (
             """
-            MATCH (n:Entity)-[e:RELATES_TO*1.."""
-            + str(bfs_max_depth)
-            + """]-(m:Entity)
-            WHERE n.uuid IN $node_uuids
+            UNWIND $bfs_origin_node_uuids AS origin_uuid
+            MATCH path = (origin:Entity {uuid: origin_uuid})-[:RELATES_TO*1.."""
+            + str(depth)
+            + """]->(:RelatesToNode_)
+            UNWIND nodes(path) AS relNode
+            MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_ {uuid: relNode.uuid})-[:RELATES_TO]->(m:Entity)
             """
-            + filter_query.replace(' WHERE ', ' AND ')
+            # No WHERE precedes the filter here, so it keeps its own leading WHERE.
+            + filter_query
             + """
             RETURN DISTINCT
-                e.uuid AS uuid,
-                n.uuid AS source_node_uuid,
-                m.uuid AS target_node_uuid,
-                e.created_at AS created_at,
-                e.name AS name,
-                e.group_id AS group_id,
-                e.fact AS fact,
-                e.fact_embedding AS fact_embedding,
-                e.episodes AS episodes,
-                e.expired_at AS expired_at,
-                e.valid_at AS valid_at,
-                e.invalid_at AS invalid_at,
-                e.attributes AS attributes
+            """
+            + get_entity_edge_return_query(GraphProvider.KUZU)
+            + """
             LIMIT $limit
             """
         )
     else:
         query = (
+            f"""
+            UNWIND $bfs_origin_node_uuids AS origin_uuid
+            MATCH path = (origin {{uuid: origin_uuid}})-[:RELATES_TO|MENTIONS*1..{bfs_max_depth}]->(:Entity)
+            UNWIND relationships(path) AS rel
+            WITH rel AS e, startNode(rel) AS n, endNode(rel) AS m
+            WHERE type(e) = 'RELATES_TO'
+            WITH e, n, m
             """
-            MATCH (n:Entity)-[e:RELATES_TO*1.."""
-            + str(bfs_max_depth)
-            + """]-(m:Entity)
-            WHERE n.uuid IN $node_uuids
-            """
-            + filter_query.replace(' WHERE ', ' AND ')
+            + filter_query
             + """
-            WITH DISTINCT last(e) AS e
-            RETURN
-                e.uuid AS uuid,
-                e.group_id AS group_id,
-                startNode(e).uuid AS source_node_uuid,
-                endNode(e).uuid AS target_node_uuid,
-                e.created_at AS created_at,
-                e.name AS name,
-                e.fact AS fact,
-                e.fact_embedding AS fact_embedding,
-                e.episodes AS episodes,
-                e.expired_at AS expired_at,
-                e.valid_at AS valid_at,
-                e.invalid_at AS invalid_at,
-                properties(e) AS attributes
+            RETURN DISTINCT
+            """
+            + get_entity_edge_return_query(driver.provider)
+            + """
             LIMIT $limit
             """
         )
 
     records, _, _ = await driver.execute_query(
         query,
-        node_uuids=bfs_origin_node_uuids,
+        bfs_origin_node_uuids=bfs_origin_node_uuids,
         limit=limit,
         routing_='r',
         **filter_params,
