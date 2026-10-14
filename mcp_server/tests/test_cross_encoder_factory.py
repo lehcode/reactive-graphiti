@@ -18,6 +18,7 @@ from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerCli
 import graphiti_mcp_server
 from config.schema import (
     AnthropicProviderConfig,
+    CrossEncoderConfig,
     DatabaseConfig,
     EmbedderConfig,
     EmbedderProvidersConfig,
@@ -81,6 +82,105 @@ class TestCrossEncoderFactory:
             CrossEncoderFactory.create(llm, embedder)
 
         assert '~2.3 GB' in caplog.text
+
+
+class TestCrossEncoderFactoryBGE:
+    """Tests for the cross_encoder=bge provider path (mcp-gpu-reranker)."""
+
+    def test_bge_selected_with_default_model(self, monkeypatch):
+        """bge with no config.model uses the default model name."""
+        mock_cls = Mock()
+        mock_cls.return_value.model_name = 'BAAI/bge-reranker-v2-m3'
+        monkeypatch.setattr(
+            'graphiti_core.cross_encoder.bge_reranker_client.BGERerankerClient',
+            mock_cls,
+        )
+        llm = LLMConfig(provider='openai')
+        embedder = EmbedderConfig(provider='openai')
+        cross_enc = CrossEncoderConfig(
+            enabled=True,
+            provider='bge',
+        )
+        client = CrossEncoderFactory.create(llm, embedder, cross_enc)
+
+        mock_cls.assert_called_once_with(
+            model_name='BAAI/bge-reranker-v2-m3',
+            device=None,
+        )
+        assert client.model_name == 'BAAI/bge-reranker-v2-m3'
+
+    def test_bge_custom_model_and_device(self, monkeypatch):
+        """bge with explicit model + device passes them through."""
+        mock_cls = Mock()
+        mock_cls.return_value.model_name = 'custom/bge-model'
+        monkeypatch.setattr(
+            'graphiti_core.cross_encoder.bge_reranker_client.BGERerankerClient',
+            mock_cls,
+        )
+        llm = LLMConfig(provider='openai')
+        embedder = EmbedderConfig(provider='openai')
+        cross_enc = CrossEncoderConfig(
+            enabled=True,
+            provider='bge',
+            model='custom/bge-model',
+            device='cuda:1',
+        )
+        client = CrossEncoderFactory.create(llm, embedder, cross_enc)
+
+        mock_cls.assert_called_once_with(
+            model_name='custom/bge-model',
+            device='cuda:1',
+        )
+        assert client.model_name == 'custom/bge-model'
+
+    def test_disabled_bge_uses_old_path(self, monkeypatch):
+        """cross_encoder.enabled=False falls through to provider logic."""
+        mock_ce = Mock()
+        monkeypatch.setattr(
+            'graphiti_core.cross_encoder.bge_reranker_client.CrossEncoder',
+            mock_ce,
+        )
+        llm = LLMConfig(
+            provider='openai',
+            providers=LLMProvidersConfig(openai=OpenAIProviderConfig(api_key='k')),
+        )
+        embedder = EmbedderConfig(
+            provider='openai',
+            providers=EmbedderProvidersConfig(openai=OpenAIProviderConfig(api_key='k')),
+        )
+        cross_enc = CrossEncoderConfig(
+            enabled=False,
+            provider='bge',
+        )
+        result = CrossEncoderFactory.create(llm, embedder, cross_enc)
+
+        # Should use OpenAIRerankerClient, not BGERerankerClient
+        assert isinstance(result, OpenAIRerankerClient)
+        mock_ce.assert_not_called()
+
+    def test_non_bge_provider_uses_old_path(self, monkeypatch):
+        """cross_encoder.provider='openai' ignores cross_encoder config."""
+        mock_ce = Mock()
+        monkeypatch.setattr(
+            'graphiti_core.cross_encoder.bge_reranker_client.CrossEncoder',
+            mock_ce,
+        )
+        llm = LLMConfig(
+            provider='openai',
+            providers=LLMProvidersConfig(openai=OpenAIProviderConfig(api_key='k')),
+        )
+        embedder = EmbedderConfig(
+            provider='openai',
+            providers=EmbedderProvidersConfig(openai=OpenAIProviderConfig(api_key='k')),
+        )
+        cross_enc = CrossEncoderConfig(
+            enabled=True,
+            provider='openai',  # not bge
+        )
+        result = CrossEncoderFactory.create(llm, embedder, cross_enc)
+
+        assert isinstance(result, OpenAIRerankerClient)
+        mock_ce.assert_not_called()
 
 
 @pytest.mark.asyncio
