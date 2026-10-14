@@ -11,4 +11,4 @@ do not open a feature pull request until then. If a PR is opened without that ap
 flagged and closed after 14 days only if the gap remains. Correct, approved work is not auto-closed.
 Prototypes are welcome as drafts.
 
-Contribution guide: https://github.com/getzep/graphiti/blob/main/CONTRIBUTING.md
+Contribution guide: <https://github.com/getzep/graphiti/blob/main/CONTRIBUTING.md>
