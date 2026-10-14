@@ -114,15 +114,37 @@ fi
 # 6. Radon (Maintainability & Modularization)
 echo -e "\n${BLUE}[6/6] Running Maintainability Index Check...${NC}"
 RADON_OUTPUT=$(radon mi $PYTHON_DIRS --min B --max F 2>&1 || true)
-LOW_MI_COUNT=$(echo "$RADON_OUTPUT" | grep -c " - [B-F]")
+# Baseline: a low-MI module fails only if it is new or its grade is worse than at
+# merge-base(HEAD, QUALITY_BASE_REF), so upstream-owned debt does not block pushes.
+# Without a resolvable base every low-MI module fails (strict mode).
+QUALITY_BASE_REF=${QUALITY_BASE_REF:-origin/master}
+MI_BASE=$(git merge-base HEAD "$QUALITY_BASE_REF" 2>/dev/null || true)
+LOW_MI_OUTPUT=""
+BASELINE_MI_OUTPUT=""
+while read -r MI_PATH _ MI_GRADE; do
+    BASE_GRADE=""
+    if [ -n "$MI_BASE" ]; then
+        BASE_GRADE=$(git show "$MI_BASE:$MI_PATH" 2>/dev/null | radon mi - 2>/dev/null | awk '{print $NF}')
+    fi
+    if [ -n "$BASE_GRADE" ] && [[ ! "$MI_GRADE" > "$BASE_GRADE" ]]; then
+        BASELINE_MI_OUTPUT+="$MI_PATH - $MI_GRADE (baseline ${BASE_GRADE})"$'\n'
+    else
+        LOW_MI_OUTPUT+="$MI_PATH - $MI_GRADE (baseline ${BASE_GRADE:-none})"$'\n'
+    fi
+done < <(echo "$RADON_OUTPUT" | grep " - [B-F]")
+LOW_MI_COUNT=$(printf '%s' "$LOW_MI_OUTPUT" | grep -c " - [B-F]")
 LOW_MI_COUNT=${LOW_MI_COUNT:-0}
 
+if [ -n "$BASELINE_MI_OUTPUT" ]; then
+    echo -e "${YELLOW}Pre-existing low MI at ${MI_BASE:0:8} (${QUALITY_BASE_REF}), not counted:${NC}"
+    printf '%s' "$BASELINE_MI_OUTPUT"
+fi
 if [ "$LOW_MI_COUNT" -gt 0 ]; then
     echo -e "${RED}✖ Failed: $LOW_MI_COUNT module(s) with Maintainability Index below threshold${NC}"
-    echo "$RADON_OUTPUT"
+    printf '%s' "$LOW_MI_OUTPUT"
     BUILD_FAILED=1
 else
-    echo -e "${GREEN}✔ Passed: All modules have high Maintainability Index.${NC}"
+    echo -e "${GREEN}✔ Passed: No module's Maintainability Index dropped below grade A or its baseline.${NC}"
 fi
 
 # Summary Report
