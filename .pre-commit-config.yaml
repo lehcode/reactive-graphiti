@@ -1,4 +1,5 @@
 fail_fast: true
+default_install_hook_types: [pre-commit, pre-push]
 repos:
   - repo: local
     hooks:
@@ -67,8 +68,23 @@ repos:
         stages: [pre-commit, pre-push]
 
 
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.44.0
+  # Replaced by markdownlint-amend below, which also amends at pre-push
+  # - repo: https://github.com/igorshubovych/markdownlint-cli
+  #   rev: v0.44.0
+  #   hooks:
+  #     - id: markdownlint
+  #       args: ["--config", ".markdownlint.yaml", "--fix"]
+  #       stages: [pre-push]
+
+  - repo: local
     hooks:
-      - id: markdownlint
-        args: ["--config", ".markdownlint.yaml", "--fix"]
+      # Fixes Markdown files: re-stages them into the commit at pre-commit; amends them
+      # into HEAD at pre-push (then stops the push so it is re-run)
+      - id: markdownlint-amend
+        name: markdownlint (fix and amend)
+        entry: scripts/markdownlint-amend.sh
+        language: node
+        additional_dependencies: ["markdownlint-cli@0.44.0"]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, pre-push]
