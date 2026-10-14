@@ -2,181 +2,57 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+@AGENTS.md
 
-Graphiti is a Python framework for building temporally-aware knowledge graphs designed for AI agents. It enables real-time incremental updates to knowledge graphs without batch recomputation, making it suitable for dynamic environments.
+## Fork context
 
-Key features:
+- `reactive-graphiti` is a fork of getzep/graphiti. Remotes: `origin` (GitLab, primary), `github-fork` (lehcode), `upstream` (getzep). Upstream is merged periodically — keep diffs against upstream files small; prefer additive changes.
+- Fork-specific: `graphiti_core/llm_client/litellm_client.py` (`LiteLLMClient`, formerly `OpenAIGenericClient`) is used by `server/` and the MCP server for Ollama/vLLM/LiteLLM endpoints. `mcp_server/src/services/factories.py` has a try/except import shim falling back to upstream `OpenAIGenericClient` when an upstream `graphiti-core` wheel is installed — keep it.
+- MCP tools accept a reserved `codemode: bool = False` param (absorbs stray client args); don't remove it.
+- Root `Dockerfile` builds the FastAPI `server/` image and installs `graphiti-core` **from PyPI**, not local source. MCP images live in `mcp_server/docker/`.
+- `scripts/quality-benchmark.sh` — manual quality gate (shellcheck, ruff, pyright, dead code, duplication) over `graphiti_core server mcp_server/src`; fails on any ruff/type error. Not wired into CI.
 
-- Bi-temporal data model with explicit tracking of event occurrence times
-- Hybrid retrieval combining semantic embeddings, keyword search (BM25), and graph traversal
-- Support for custom entity definitions via Pydantic models
-- Integration with Neo4j and FalkorDB as graph storage backends
-- Optional OpenTelemetry distributed tracing support
+## Git
 
-## Development Commands
+- `--no-verify` is strictly prohibited on every commit and push. When a hook fails (incl. the pre-push `scripts/quality-benchmark.sh`), fix the cause or stop and ask the user.
 
-### Main Development Commands (run from project root)
+## Architecture
 
-```bash
-# Install dependencies
-uv sync --extra dev
+### Ingestion (`graphiti_core/graphiti.py`)
 
-# Format code (ruff import sorting + formatting)
-make format
+`add_episode` pipeline: fetch previous episodes as context → `extract_nodes` → `resolve_extracted_nodes` (deterministic exact/fuzzy dedup in `utils/maintenance/dedup_helpers.py`, LLM fallback) → `_extract_and_resolve_edges` (`extract_edges` + `resolve_extracted_edges`: dedup + temporal invalidation of contradicted edges) → `extract_attributes_from_nodes` (summaries/attributes) → `_process_episode_data` (persist) → optional `update_community`. Step logic lives in `utils/maintenance/{node,edge}_operations.py`.
 
-# Lint code (ruff + pyright type checking)
-make lint
+`add_episode_bulk` takes `RawEpisode`s and uses `utils/bulk_utils.py` (in-memory bulk dedup). `use_combined_extraction` (single LLM call for nodes+edges, `utils/maintenance/combined_extraction.py`) exists only as a `bulk_utils` flag, default off, not wired anywhere.
 
-# Run tests
-make test
+### LLM calls
 
-# Run all checks (format, lint, test)
-make check
-```
+Prompts: `prompt_library.<module>.<version>(context)` (`prompts/lib.py`); each prompt module declares a `Versions` TypedDict. Structured output via Pydantic `response_model`. Custom entity types = `dict[str, type[BaseModel]]`; custom edge types = `edge_types` + `edge_type_map` keyed by `(source_label, target_label)`.
 
-### Server Development (run from server/ directory)
+### Driver layer (`graphiti_core/driver/`)
 
-```bash
-cd server/
-# Install server dependencies
-uv sync --extra dev
+Three layers (redesign in progress, `spec/driver-operations-redesign.md`, Phase 1 non-breaking):
 
-# Run server in development mode
-uvicorn graph_service.main:app --reload
+1. Namespaces — `graphiti.nodes.*` / `graphiti.edges.*` (`namespaces/`): intended public API; handles embedding then delegates to ops.
+2. Operations ABCs — `driver/operations/*_ops.py`, implemented per backend in `driver/<backend>/operations/`, exposed as `*_ops` properties on `GraphDriver`.
+3. `GraphDriver` (`driver.py`) — connection/session/query execution.
 
-# Format, lint, test server code
-make format
-make lint
-make test
-```
+Legacy paths still active: `EntityNode.save()`-style methods in `nodes.py`/`edges.py` (internals like `add_episode` still use them), and `graph_operations_interface`/`search_interface` override hooks. Provider query strings also live in `models/{nodes,edges}/*_db_queries.py`, `graph_queries.py`, `search/search_utils.py`.
 
-### MCP Server Development (run from mcp_server/ directory)
+**Adding a query:** add to the ABC, implement in every backend's `operations/` (Neo4j, FalkorDB, Neptune; Kuzu deprecated), add a namespace wrapper if public. See CONTRIBUTING.md "Adding a Graph Driver".
 
-```bash
-cd mcp_server/
-# Install MCP server dependencies
-uv sync
+`group_id` is the partition key; on FalkorDB it maps to a separate graph — `@handle_multiple_group_ids` (`decorators.py`) fans out per group via `driver.clone()`.
 
-# Run with Docker Compose
-docker-compose up
-```
+### Search (`graphiti_core/search/`)
 
-## Code Architecture
+`Graphiti.search()` → edges only, preset `EDGE_HYBRID_SEARCH_RRF` (or `NODE_DISTANCE` with a center node). `Graphiti.search_()` → `SearchResults` (nodes/edges/episodes/communities) driven by a `SearchConfig`; presets in `search_config_recipes.py`. Rerankers in `cross_encoder/`.
 
-### Core Library (`graphiti_core/`)
+Gotcha: `search()` sets `.limit` on the shared module-level recipe object — copy a recipe (`model_copy()`) before mutating it.
 
-- **Main Entry Point**: `graphiti.py` - Contains the main `Graphiti` class that orchestrates all functionality
-- **Graph Storage**: `driver/` - Database drivers for Neo4j and FalkorDB
-- **LLM Integration**: `llm_client/` - Clients for OpenAI, Anthropic, Gemini, Groq
-- **Embeddings**: `embedder/` - Embedding clients for various providers
-- **Graph Elements**: `nodes.py`, `edges.py` - Core graph data structures
-- **Search**: `search/` - Hybrid search implementation with configurable strategies
-- **Prompts**: `prompts/` - LLM prompts for entity extraction, deduplication, summarization
-- **Utilities**: `utils/` - Maintenance operations, bulk processing, datetime handling
+### Services
 
-### Server (`server/`)
+- `mcp_server/`: `main.py` → `src/graphiti_mcp_server.py` (FastMCP tools). `src/config/schema.py` loads YAML from `CONFIG_PATH` (default `config/config.yaml`) with `${VAR:default}` expansion; env overrides use `__` nesting. `src/services/factories.py` builds LLM/embedder/DB clients per provider. `src/services/queue_service.py` runs one asyncio queue + worker per `group_id` so episodes in a group are processed sequentially.
+- `server/`: FastAPI; `graph_service/zep_graphiti.py` subclasses `Graphiti` and builds the client per request (`X-LLM-Tier` header selects LLM tier).
 
-- **FastAPI Service**: `graph_service/main.py` - REST API server
-- **Routers**: `routers/` - API endpoints for ingestion and retrieval
-- **DTOs**: `dto/` - Data transfer objects for API contracts
+### Optional integrations
 
-### MCP Server (`mcp_server/`)
-
-- **MCP Implementation**: `graphiti_mcp_server.py` - Model Context Protocol server for AI assistants
-- **Docker Support**: Containerized deployment with Neo4j
-
-## Testing
-
-- **Unit Tests**: `tests/` - Comprehensive test suite using pytest
-- **Integration Tests**: Tests marked with `_int` suffix require database connections
-- **Evaluation**: `tests/evals/` - End-to-end evaluation scripts
-
-## Configuration
-
-### Environment Variables
-
-- `OPENAI_API_KEY` - Required for LLM inference and embeddings
-- `USE_PARALLEL_RUNTIME` - Optional boolean for Neo4j parallel runtime (enterprise only)
-- Provider-specific keys: `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `VOYAGE_API_KEY`
-
-### Database Setup
-
-- **Neo4j**: Version 5.26+ required, available via Neo4j Desktop
-  - Database name defaults to `neo4j` (hardcoded in Neo4jDriver)
-  - Override by passing `database` parameter to driver constructor
-- **FalkorDB**: Version 1.1.2+ as alternative backend
-  - Database name defaults to `default_db` (hardcoded in FalkorDriver)
-  - Override by passing `database` parameter to driver constructor
-
-## Development Guidelines
-
-### Code Style
-
-- Use Ruff for formatting and linting (configured in pyproject.toml)
-- Line length: 100 characters
-- Quote style: single quotes
-- Type checking with Pyright is enforced
-- Main project uses `typeCheckingMode = "basic"`, server uses `typeCheckingMode = "standard"`
-
-### Testing Requirements
-
-- Run tests with `make test` or `pytest`
-- Integration tests require database connections and are marked with `_int` suffix
-- Use `pytest-xdist` for parallel test execution
-- Run specific test files: `pytest tests/test_specific_file.py`
-- Run specific test methods: `pytest tests/test_file.py::test_method_name`
-- Run only integration tests: `pytest tests/ -k "_int"`
-- Run only unit tests: `pytest tests/ -k "not _int"`
-
-### LLM Provider Support
-
-The codebase supports multiple LLM providers but works best with services supporting structured output (OpenAI, Gemini). Other providers may cause schema validation issues, especially with smaller models.
-
-#### Current LLM Models (as of November 2025)
-
-**OpenAI Models:**
-- **GPT-5 Family** (Reasoning models, require temperature=0):
-  - `gpt-5-mini` - Fast reasoning model
-  - `gpt-5-nano` - Smallest reasoning model
-- **GPT-4.1 Family** (Standard models):
-  - `gpt-4.1` - Full capability model
-  - `gpt-4.1-mini` - Efficient model for most tasks
-  - `gpt-4.1-nano` - Lightweight model
-- **Legacy Models** (Still supported):
-  - `gpt-4o` - Previous generation flagship
-  - `gpt-4o-mini` - Previous generation efficient
-
-**Anthropic Models:**
-- **Claude 4.5 Family** (Latest):
-  - `claude-sonnet-4-5-latest` - Flagship model, auto-updates
-  - `claude-sonnet-4-5-20250929` - Pinned Sonnet version from September 2025
-  - `claude-haiku-4-5-latest` - Fast model, auto-updates
-- **Claude 3.7 Family**:
-  - `claude-3-7-sonnet-latest` - Auto-updates
-  - `claude-3-7-sonnet-20250219` - Pinned version from February 2025
-- **Claude 3.5 Family**:
-  - `claude-3-5-sonnet-latest` - Auto-updates
-  - `claude-3-5-sonnet-20241022` - Pinned version from October 2024
-  - `claude-3-5-haiku-latest` - Fast model
-
-**Google Gemini Models:**
-- **Gemini 2.5 Family** (Latest):
-  - `gemini-2.5-pro` - Flagship reasoning and multimodal
-  - `gemini-2.5-flash` - Fast, efficient
-- **Gemini 2.0 Family**:
-  - `gemini-2.0-flash` - Experimental fast model
-- **Gemini 1.5 Family** (Stable):
-  - `gemini-1.5-pro` - Production-stable flagship
-  - `gemini-1.5-flash` - Production-stable efficient
-
-**Note**: Model names like `gpt-5-mini`, `gpt-4.1`, and `gpt-4.1-mini` used in this codebase are valid OpenAI model identifiers. The GPT-5 family are reasoning models that require `temperature=0` (automatically handled in the code).
-
-### MCP Server Usage Guidelines
-
-When working with the MCP server, follow the patterns established in `mcp_server/cursor_rules.md`:
-
-- Always search for existing knowledge before adding new information
-- Use specific entity type filters (`Preference`, `Procedure`, `Requirement`)
-- Store new information immediately using `add_memory`
-- Follow discovered procedures and respect established preferences
+Third-party deps must be optional extras (also listed in `dev`), imported via the `TYPE_CHECKING` + `try/except ImportError` pattern; never import them in `__init__.py` (CONTRIBUTING.md).

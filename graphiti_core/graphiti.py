@@ -40,14 +40,16 @@ from graphiti_core.edges import (
 )
 from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
-from graphiti_core.graphiti_types import GraphitiClients
+from graphiti_core.graphiti_types import GraphitiClients, generate_prompt_response
 from graphiti_core.helpers import (
+    EPISODE_CONTENT_BUDGET_RATIO,
+    PREVIOUS_EPISODE_LIMIT,
     get_default_group_id,
     semaphore_gather,
     validate_excluded_entity_types,
     validate_group_id,
 )
-from graphiti_core.llm_client import LLMClient, OpenAIClient
+from graphiti_core.llm_client import LLMClient, LLMRuntime, OpenAIClient
 from graphiti_core.namespaces import EdgeNamespace, NodeNamespace
 from graphiti_core.nodes import (
     CommunityNode,
@@ -58,7 +60,12 @@ from graphiti_core.nodes import (
     SagaNode,
     create_entity_node_embeddings,
 )
-from graphiti_core.prompts.lib import prompt_library
+from graphiti_core.prompts import prompt_library
+from graphiti_core.prompts.lib import (
+    ChatPromptLibrary,
+    ensure_prompt_library_wrapped,
+    validate_prompt_library,
+)
 from graphiti_core.prompts.summarize_sagas import SagaSummary
 from graphiti_core.search.search import SearchConfig, search
 from graphiti_core.search.search_config import DEFAULT_SEARCH_LIMIT, SearchResults
@@ -69,7 +76,6 @@ from graphiti_core.search.search_config_recipes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search_utils import (
-    RELEVANT_SCHEMA_LIMIT,
     get_mentioned_nodes,
 )
 from graphiti_core.telemetry import capture_event
@@ -83,7 +89,11 @@ from graphiti_core.utils.bulk_utils import (
     resolve_edge_pointers,
     retrieve_previous_episodes_bulk,
 )
+from graphiti_core.utils.content_chunking import (
+    estimate_tokens,
+)
 from graphiti_core.utils.datetime_utils import utc_now
+from graphiti_core.utils.episode_splitting import run_episode_split
 from graphiti_core.utils.maintenance.community_operations import (
     build_communities,
     remove_communities,
@@ -149,6 +159,8 @@ class Graphiti:
         max_coroutines: int | None = None,
         tracer: Tracer | None = None,
         trace_span_prefix: str = 'graphiti',
+        prompt_library: ChatPromptLibrary | None = None,
+        llm_runtime: LLMRuntime | None = None,
     ):
         """
         Initialize a Graphiti instance.
@@ -167,6 +179,7 @@ class Graphiti:
         llm_client : LLMClient | None, optional
             An instance of LLMClient for natural language processing tasks.
             If not provided, a default OpenAIClient will be initialized.
+            Cannot be combined with ``llm_runtime``.
         embedder : EmbedderClient | None, optional
             An instance of EmbedderClient for embedding tasks.
             If not provided, a default OpenAIEmbedder will be initialized.
@@ -185,6 +198,22 @@ class Graphiti:
             An OpenTelemetry tracer instance for distributed tracing. If not provided, tracing is disabled (no-op).
         trace_span_prefix : str, optional
             Prefix to prepend to all span names. Defaults to 'graphiti'.
+        prompt_library : ChatPromptLibrary | None, optional
+            An instance-scoped prompt library used for all LLM prompt construction.
+            If not provided, Graphiti uses its legacy module-level prompt functions.
+            ``self.prompt_library`` and ``self.clients.prompt_library`` remain ``None`` by default.
+            For partial customization, compose overrides with
+            ``create_prompt_library(overrides)`` and pass the result here.
+            Override callables must return ``ChatPrompt``.
+            Cannot be combined with ``llm_runtime``.
+        llm_runtime : LLMRuntime | None, optional
+            An opt-in runtime that routes prompts across one or more
+            ``LLMTransport`` instances. It requires a default ``LLMModel``.
+            The runtime owns prompt selection and model routing. It has no
+            ``small_id`` field. ``model_size`` does not select a smaller model
+            on the runtime path. Route lightweight prompts to a smaller model.
+            GLiNER2 does not support per-prompt routing. Cannot be combined
+            with ``llm_client`` or ``prompt_library``.
 
         Returns
         -------
@@ -205,6 +234,15 @@ class Graphiti:
         Graphiti if you're using the default OpenAIClient.
         """
 
+        if llm_runtime is not None:
+            extras = [
+                name
+                for name, value in (('llm_client', llm_client), ('prompt_library', prompt_library))
+                if value is not None
+            ]
+            if extras:
+                raise ValueError('llm_runtime cannot be combined with: ' + ', '.join(extras) + '.')
+
         if graph_driver:
             self.driver = graph_driver
         else:
@@ -214,10 +252,22 @@ class Graphiti:
 
         self.store_raw_episode_content = store_raw_episode_content
         self.max_coroutines = max_coroutines
-        if llm_client:
-            self.llm_client = llm_client
+
+        self.llm_runtime = llm_runtime
+        if llm_runtime is not None:
+            self.llm_client = llm_runtime.client
+            self.prompt_library = llm_runtime.library
         else:
-            self.llm_client = OpenAIClient()
+            if llm_client:
+                self.llm_client = llm_client
+            else:
+                self.llm_client = OpenAIClient()
+            if prompt_library is not None:
+                validate_prompt_library(prompt_library)
+                self.prompt_library = ensure_prompt_library_wrapped(prompt_library)
+            else:
+                self.prompt_library = None
+
         if embedder:
             self.embedder = embedder
         else:
@@ -231,7 +281,10 @@ class Graphiti:
         self.tracer = create_tracer(tracer, trace_span_prefix)
 
         # Set tracer on clients
-        self.llm_client.set_tracer(self.tracer)
+        if self.llm_runtime is not None:
+            self.llm_runtime.set_tracer(self.tracer)
+        else:
+            self.llm_client.set_tracer(self.tracer)
 
         self.clients = GraphitiClients(
             driver=self.driver,
@@ -239,6 +292,8 @@ class Graphiti:
             embedder=self.embedder,
             cross_encoder=self.cross_encoder,
             tracer=self.tracer,
+            prompt_library=self.prompt_library,
+            llm_runtime=self.llm_runtime,
         )
 
         # Initialize namespace API (graphiti.nodes.entity.save(), etc.)
@@ -547,10 +602,13 @@ class Graphiti:
             'episodes': episode_contents,
         }
 
-        llm_response = await self.llm_client.generate_response(
-            prompt_library.summarize_sagas.summarize_saga(context),
+        llm_response = await generate_prompt_response(
+            self.llm_client,
+            'summarize_sagas.summarize_saga',
+            prompt_library.summarize_sagas.summarize_saga,
+            context,
+            clients=self.clients,
             response_model=SagaSummary,
-            prompt_name='summarize_sagas.summarize_saga',
         )
 
         summary = llm_response.get('summary', '')
@@ -1109,13 +1167,33 @@ class Graphiti:
 
         Returns
         -------
-        None
+        AddEpisodeResults
+            The results of the operation. If the episode body exceeds the configured
+            input-token budget (see :data:`helpers.EPISODE_CONTENT_BUDGET_RATIO`), the
+            body is split into sequential parts processed as a saga; the returned
+            ``episode`` is the last part's episode, while ``nodes`` and ``edges`` are
+            deduplicated by UUID keeping the last occurrence. All other fields are
+            concatenated across parts.
 
         Notes
         -----
-        This method performs several steps including node extraction, edge extraction,
-        deduplication, and database updates. It also handles embedding generation
-        and edge invalidation.
+        Oversized-episode splitting
+            When all of the following hold the body is auto-chunked and the parts are
+            processed sequentially as a saga:
+
+            * ``uuid is None`` (never splits re-processing of existing episodes),
+            * ``self.llm_client.input_token_budget()`` returns an ``int``,
+            * ``estimate_tokens(episode_body) > EPISODE_CONTENT_BUDGET_RATIO * budget``.
+
+            Parts are named ``'{name} (part i/N)'`` and join the saga named by
+            ``saga`` (or a new saga named ``name`` if no saga was given).  If the
+            chunker returns a single part the original body is processed normally
+            (no recursion).  Splitting is active whenever the LLM client reports an
+            input-token budget; raise ``EPISODE_CONTENT_BUDGET_RATIO`` to split less often.
+
+            Parts are persisted one at a time and are not rolled back.  If part ``k``
+            fails, parts ``1..k-1`` remain in the graph and the exception propagates;
+            retrying the same call adds those parts again as new episodes.
 
         It is recommended to run this method as a background process, such as in a queue.
         It's important that each episode is added sequentially and awaited before adding
@@ -1128,6 +1206,71 @@ class Graphiti:
                 background_tasks.add_task(graphiti.add_episode, **episode_data.dict())
                 return {"message": "Episode processing started"}
         """
+        # Oversized bodies are split into a saga; re-processing an existing episode never is.
+        budget = self.llm_client.input_token_budget()
+        if (
+            isinstance(budget, int)
+            and uuid is None
+            and estimate_tokens(episode_body) > EPISODE_CONTENT_BUDGET_RATIO * budget
+        ):
+            return await self._add_episode_split(
+                name=name,
+                episode_body=episode_body,
+                source_description=source_description,
+                reference_time=reference_time,
+                source=source,
+                group_id=group_id,
+                update_communities=update_communities,
+                entity_types=entity_types,
+                excluded_entity_types=excluded_entity_types,
+                previous_episode_uuids=previous_episode_uuids,
+                edge_types=edge_types,
+                edge_type_map=edge_type_map,
+                custom_extraction_instructions=custom_extraction_instructions,
+                saga=saga,
+                saga_previous_episode_uuid=saga_previous_episode_uuid,
+                budget=budget,
+            )
+
+        return await self._add_episode_internal(
+            name=name,
+            episode_body=episode_body,
+            source_description=source_description,
+            reference_time=reference_time,
+            source=source,
+            group_id=group_id,
+            uuid=uuid,
+            update_communities=update_communities,
+            entity_types=entity_types,
+            excluded_entity_types=excluded_entity_types,
+            previous_episode_uuids=previous_episode_uuids,
+            edge_types=edge_types,
+            edge_type_map=edge_type_map,
+            custom_extraction_instructions=custom_extraction_instructions,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
+        )
+
+    async def _add_episode_internal(
+        self,
+        name: str,
+        episode_body: str,
+        source_description: str,
+        reference_time: datetime,
+        source: EpisodeType,
+        group_id: str | None,
+        uuid: str | None,
+        update_communities: bool,
+        entity_types: dict[str, type[BaseModel]] | None,
+        excluded_entity_types: list[str] | None,
+        previous_episode_uuids: list[str] | None,
+        edge_types: dict[str, type[BaseModel]] | None,
+        edge_type_map: dict[tuple[str, str], list[str]] | None,
+        custom_extraction_instructions: str | None,
+        saga: str | SagaNode | None,
+        saga_previous_episode_uuid: str | None,
+    ) -> AddEpisodeResults:
+        """Process a single episode (internal, no splitting)."""
         start = time()
         now = utc_now()
 
@@ -1145,7 +1288,7 @@ class Graphiti:
                 previous_episodes = (
                     await self.retrieve_episodes(
                         reference_time,
-                        last_n=RELEVANT_SCHEMA_LIMIT,
+                        last_n=PREVIOUS_EPISODE_LIMIT,
                         group_ids=[group_id],
                         source=source,
                         driver=driver,
@@ -1245,7 +1388,13 @@ class Graphiti:
                 if update_communities:
                     communities, community_edges = await semaphore_gather(
                         *[
-                            update_community(driver, clients.llm_client, clients.embedder, node)
+                            update_community(
+                                driver,
+                                clients.llm_client,
+                                clients.embedder,
+                                node,
+                                clients=clients,
+                            )
                             for node in nodes
                         ],
                         max_coroutines=self.max_coroutines,
@@ -1287,6 +1436,50 @@ class Graphiti:
                 span.set_status('error', str(e))
                 span.record_exception(e)
                 raise e
+
+    async def _add_episode_split(
+        self,
+        name: str,
+        episode_body: str,
+        source_description: str,
+        reference_time: datetime,
+        source: EpisodeType,
+        group_id: str | None,
+        update_communities: bool,
+        entity_types: dict[str, type[BaseModel]] | None,
+        excluded_entity_types: list[str] | None,
+        previous_episode_uuids: list[str] | None,
+        edge_types: dict[str, type[BaseModel]] | None,
+        edge_type_map: dict[tuple[str, str], list[str]] | None,
+        custom_extraction_instructions: str | None,
+        saga: str | SagaNode | None,
+        saga_previous_episode_uuid: str | None,
+        budget: int,
+    ) -> AddEpisodeResults:
+        """Split an oversized episode body into parts and process sequentially.
+
+        Each part is named ``'{name} (part i/N)'``.  Parts join ``saga`` if the
+        caller provided one; otherwise a saga named ``name`` is created.
+        """
+        return await run_episode_split(
+            self,
+            name=name,
+            episode_body=episode_body,
+            source=source,
+            budget=budget,
+            previous_episode_uuids=previous_episode_uuids,
+            saga=saga,
+            saga_previous_episode_uuid=saga_previous_episode_uuid,
+            source_description=source_description,
+            reference_time=reference_time,
+            group_id=group_id,
+            update_communities=update_communities,
+            entity_types=entity_types,
+            excluded_entity_types=excluded_entity_types,
+            edge_types=edge_types,
+            edge_type_map=edge_type_map,
+            custom_extraction_instructions=custom_extraction_instructions,
+        )
 
     async def add_episode_bulk(
         self,
@@ -1563,8 +1756,16 @@ class Graphiti:
         # Clear existing communities (scoped: only the groups being rebuilt)
         await remove_communities(driver, group_ids=group_ids)
 
+        # Prefer the resolved clients bundle (llm_runtime / prompt_library),
+        # but honor an explicit driver override when provided.
+        clients = self.clients
+        if driver is not None and driver is not self.driver:
+            clients = self.clients.model_copy(update={'driver': driver})
         community_nodes, community_edges = await build_communities(
-            driver, self.llm_client, group_ids
+            clients.driver,
+            clients.llm_client,
+            group_ids,
+            clients=clients,
         )
 
         await semaphore_gather(
@@ -1812,6 +2013,7 @@ class Graphiti:
                 group_id=edge.group_id,
             ),
             None,
+            clients=self.clients,
         )
 
         edges: list[EntityEdge] = [resolved_edge] + invalidated_edges

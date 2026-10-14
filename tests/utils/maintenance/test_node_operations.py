@@ -986,3 +986,249 @@ async def test_extract_attributes_preserves_prior_attributes_when_label_not_in_e
     )
 
     assert results[0].attributes == {'age': 30, 'city': 'New York'}
+
+
+# ---- Budget-aware flight packing tests ----
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_falls_back_when_no_budget():
+    """When input_token_budget returns None, pack_summary_flights uses fixed-size chunks."""
+    from graphiti_core.utils.maintenance.node_budget import pack_summary_flights, summary_prompt
+    from graphiti_core.utils.maintenance.node_operations import _summary_base_context
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = None
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 100)
+        for i in range(7)
+    ]
+
+    flights = pack_summary_flights(
+        nodes, 3, llm_client, summary_prompt(False)[1], _summary_base_context(None, None)
+    )
+    assert len(flights) == 3
+    assert [f[0].name for f in flights] == ['Node0', 'Node3', 'Node6']
+
+
+@pytest.mark.asyncio
+async def test_build_budget_flights_respects_max_items(monkeypatch):
+    """max_items parameter caps the number of nodes per flight."""
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_budget import pack_summary_flights, summary_prompt
+    from graphiti_core.utils.maintenance.node_operations import _summary_base_context
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 80000  # plenty of budget
+
+    nodes = [
+        EntityNode(name=f'Node{i}', group_id='g', labels=['Entity'], summary='x' * 10)
+        for i in range(8)
+    ]
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_budget.estimate_tokens',
+        mock_estimate,
+    )
+
+    flights = pack_summary_flights(
+        nodes, 3, llm_client, summary_prompt(False)[1], _summary_base_context(None, None)
+    )
+    assert len(flights) == 3  # 8 nodes / 3 per flight = 3 batches
+    assert all(len(f) <= 3 for f in flights)
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_single_call_when_no_budget(monkeypatch, caplog):
+    """When llm_client.input_token_budget is None, _resolve_with_llm does a single call."""
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _build_candidate_indexes,
+        _resolve_with_llm,
+    )
+
+    extracted = EntityNode(name='TestNode', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(resolved_nodes=[None], uuid_map={}, unresolved_indices=[0])
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = None
+    llm_client.generate_response = AsyncMock(
+        return_value={
+            'entity_resolutions': [{'id': 0, 'name': 'TestNode', 'duplicate_candidate_id': -1}]
+        }
+    )
+
+    await _resolve_with_llm(
+        llm_client,
+        [extracted],
+        indexes=_build_candidate_indexes([]),
+        state=state,
+        episode=_make_episode(),
+        previous_episodes=[],
+        entity_types=None,
+    )
+
+    llm_client.generate_response.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_reindexed_batch_mapping(monkeypatch):
+    """Sub-batches use local IDs 0..N-1 and map back to correct global unresolved indices.
+
+    With 6 unresolved nodes and a tight budget, pack_by_budget creates multiple batches.
+    Each batch's id=0 maps to a different global unresolved index via the offset fix.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _resolve_with_llm,
+    )
+
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(6)
+    ]
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=list(range(len(extracted_nodes))),
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    # Track the extracted_nodes context sent to each LLM call
+    batch_contexts = []
+
+    async def track_calls(*args, **kwargs):
+        # Context is the 4th positional argument to generate_prompt_response
+        if len(args) >= 4:
+            batch_contexts.append(dict(args[3]))
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 80
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    with (
+        patch(
+            'graphiti_core.utils.maintenance.node_budget.generate_prompt_response',
+            AsyncMock(side_effect=track_calls),
+        ),
+        patch('graphiti_core.utils.maintenance.node_budget.estimate_tokens', mock_estimate),
+    ):
+        await _resolve_with_llm(
+            llm_client,
+            extracted_nodes,
+            indexes=_build_candidate_indexes([candidate]),
+            state=state,
+            episode=_make_episode(),
+            previous_episodes=[],
+            entity_types=None,
+        )
+
+    # With budget=80 and fixed_cost~78, limit~-2 → each item alone → 6 batches
+    assert len(batch_contexts) == 6
+    # Batch-2 (index 2) should map to global unresolved index 2 (offset=2)
+    resolved = [r for r in state.resolved_nodes if r is not None]
+    assert len(resolved) == 6
+    # Verify batch context IDs: each batch has IDs 0 (single-item batches)
+    for ctx in batch_contexts:
+        assert ctx['extracted_nodes'][0]['id'] == 0
+    # Verify resolved nodes map to correct global indices
+    for i, r in enumerate(resolved):
+        assert r.uuid == extracted_nodes[i].uuid, f'Batch {i} should resolve node {i}'
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_llm_batch_offset_prevents_aliasing(monkeypatch):
+    """Batch-2 resolutions map to different nodes than batch-1 (no aliasing).
+
+    This is the core D1 regression test: without the offset fix, batch-2's
+    id=0 would map to global unresolved index 0 — the same as batch-1's id=0.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from graphiti_core.utils.content_chunking import estimate_tokens
+    from graphiti_core.utils.maintenance.node_operations import (
+        DedupResolutionState,
+        _resolve_with_llm,
+    )
+
+    extracted_nodes = [
+        EntityNode(name=f'Node{i}', group_id='group', labels=['Entity']) for i in range(6)
+    ]
+    candidate = EntityNode(name='Placeholder', group_id='group', labels=['Entity'])
+
+    state = DedupResolutionState(
+        resolved_nodes=[None] * len(extracted_nodes),
+        uuid_map={},
+        unresolved_indices=list(range(len(extracted_nodes))),
+    )
+
+    monkeypatch.setattr(
+        'graphiti_core.utils.maintenance.node_operations.prompt_library.dedupe_nodes.nodes',
+        lambda context: ['prompt'],
+    )
+
+    batch_ids = []
+
+    async def track_calls(*args, **kwargs):
+        # Context is 4th positional arg
+        if len(args) >= 4:
+            batch_ids.extend([n['id'] for n in args[3]['extracted_nodes']])
+        return {'entity_resolutions': [{'id': 0, 'name': 'Node0', 'duplicate_candidate_id': -1}]}
+
+    llm_client = MagicMock()
+    llm_client.input_token_budget.return_value = 80
+
+    def mock_estimate(text):
+        if isinstance(text, str):
+            return len(text) // 4 + 1
+        return estimate_tokens(text)
+
+    with (
+        patch(
+            'graphiti_core.utils.maintenance.node_budget.generate_prompt_response',
+            AsyncMock(side_effect=track_calls),
+        ),
+        patch('graphiti_core.utils.maintenance.node_budget.estimate_tokens', mock_estimate),
+    ):
+        await _resolve_with_llm(
+            llm_client,
+            extracted_nodes,
+            indexes=_build_candidate_indexes([candidate]),
+            state=state,
+            episode=_make_episode(),
+            previous_episodes=[],
+            entity_types=None,
+        )
+
+    resolved = [r for r in state.resolved_nodes if r is not None]
+    # Batch IDs sent to LLM should all be 0 (single-item batches)
+    assert all(bid == 0 for bid in batch_ids)
+    # Each resolved node maps to a DIFFERENT global index (no aliasing)
+    uuids = [r.uuid for r in resolved]
+    assert len(set(uuids)) == len(uuids), f'All resolved nodes should be unique: {uuids}'
+    assert len(resolved) == 6

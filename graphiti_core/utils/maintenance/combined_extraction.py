@@ -21,7 +21,7 @@ from time import time
 from pydantic import BaseModel
 
 from graphiti_core.edges import EntityEdge
-from graphiti_core.graphiti_types import GraphitiClients
+from graphiti_core.graphiti_types import GraphitiClients, generate_prompt_response
 from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.nodes import EntityNode, EpisodicNode
 from graphiti_core.prompts import prompt_library
@@ -33,7 +33,11 @@ from graphiti_core.utils.maintenance.node_operations import (
     _build_entity_types_context,
     _collapse_exact_duplicate_extracted_nodes,
 )
-from graphiti_core.utils.text_utils import concatenate_episodes
+from graphiti_core.utils.text_utils import (
+    build_previous_episodes_context,
+    concatenate_episodes,
+    remaining_budget_for_previous_episodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,26 +114,42 @@ async def extract_nodes_and_edges(
         ]
 
     # Build context for the combined prompt
-    context = {
+    base_context = {
         'episode_content': concatenate_episodes(episodes),
-        'previous_episodes': [
-            {
-                'content': ep.content,
-                'timestamp': ep.valid_at.isoformat() if ep.valid_at else None,
-            }
-            for ep in previous_episodes
-        ],
+        'previous_episodes': [],
         'custom_extraction_instructions': custom_extraction_instructions or '',
         'entity_types': entity_types_context,
         'edge_types': edge_types_context,
     }
 
+    # Compute remaining budget
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client,
+        prompt_library.extract_nodes_and_edges.extract_message,
+        base_context,
+        response_model=CombinedExtraction,
+    )
+
+    # Build final context with previous episodes
+    context = dict(base_context)
+    context['previous_episodes'] = build_previous_episodes_context(previous_episodes, budget_tokens)
+
+    logger.debug(
+        'extract_nodes_and_edges: budget=%s episodes=%d/%d',
+        budget_tokens,
+        len(context['previous_episodes']),
+        len(previous_episodes),
+    )
+
     # Single LLM call for combined extraction
-    llm_response = await llm_client.generate_response(
-        prompt_library.extract_nodes_and_edges.extract_message(context),
+    llm_response = await generate_prompt_response(
+        llm_client,
+        'extract_nodes_and_edges.extract_message',
+        prompt_library.extract_nodes_and_edges.extract_message,
+        context,
+        clients=clients,
         response_model=CombinedExtraction,
         group_id=primary_episode.group_id,
-        prompt_name='extract_nodes_and_edges.extract_message',
     )
     response_object = CombinedExtraction(**llm_response)
 
@@ -242,11 +262,14 @@ async def extract_nodes_and_edges(
             for edge in extracted_edges
         ]
         try:
-            ts_response = await llm_client.generate_response(
-                prompt_library.extract_edges.extract_timestamps_batch({'facts': facts_with_ref}),
+            ts_response = await generate_prompt_response(
+                llm_client,
+                'extract_edges.extract_timestamps_batch',
+                prompt_library.extract_edges.extract_timestamps_batch,
+                {'facts': facts_with_ref},
+                clients=clients,
                 response_model=BatchEdgeTimestamps,
                 model_size=ModelSize.small,
-                prompt_name='extract_edges.extract_timestamps_batch',
             )
             batch_timestamps = BatchEdgeTimestamps(**ts_response)
             if len(batch_timestamps.timestamps) != len(extracted_edges):

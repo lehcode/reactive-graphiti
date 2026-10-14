@@ -15,6 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import contextvars
 import json
 import logging
 import re
@@ -27,6 +28,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel
 
 from ..prompts.models import Message
+from ..utils.content_chunking import estimate_tokens
 from .client import LLMClient, get_extraction_language_instruction
 from .config import DEFAULT_MAX_TOKENS, LLMConfig, ModelSize
 from .errors import EmptyResponseError, RateLimitError
@@ -34,6 +36,10 @@ from .errors import EmptyResponseError, RateLimitError
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = 'gpt-4.1-mini'
+
+_prompt_context: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    '_prompt_context', default=None
+)
 
 StructuredOutputMode = Literal['json_schema', 'json_object']
 
@@ -228,6 +234,8 @@ class LiteLLMClient(LLMClient):
         response_model: type[BaseModel] | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         model_size: ModelSize = ModelSize.medium,
+        *,
+        model: str | None = None,
     ) -> dict[str, typing.Any]:
         openai_messages: list[ChatCompletionMessageParam] = []
         for m in messages:
@@ -238,7 +246,7 @@ class LiteLLMClient(LLMClient):
                 openai_messages.append({'role': 'system', 'content': m.content})
         try:
             response = await self.client.chat.completions.create(
-                model=self.model or DEFAULT_MODEL,
+                model=model or self.model or DEFAULT_MODEL,
                 messages=openai_messages,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
@@ -249,10 +257,35 @@ class LiteLLMClient(LLMClient):
             # json.loads raise a cryptic JSONDecodeError; surface a clear error instead.
             if not result:
                 raise EmptyResponseError('LLM returned an empty response')
+
+            # Record token usage and log prompt size (before JSON parsing so parse
+            # failures still report real prompt_tokens; context set by generate_response)
+            ctx = _prompt_context.get()
+            if ctx:
+                prompt_name = ctx['prompt_name']
+                input_tokens = getattr(response.usage, 'prompt_tokens', None) or 0
+                output_tokens = getattr(response.usage, 'completion_tokens', None) or 0
+                self.token_tracker.record(prompt_name, input_tokens, output_tokens)
+                est = ctx['estimate']
+                budget_str = (
+                    f' budget={ctx["budget"]}'
+                    if 'budget' in ctx and ctx.get('budget') is not None
+                    else ''
+                )
+                logger.info(
+                    f'LLM prompt size: prompt={prompt_name} model={ctx["model"]} '
+                    f'est_total={est["total"]} est_system={est["system"]} '
+                    f'est_user={est["user"]} est_schema={est["schema"]} '
+                    f'prompt_tokens={input_tokens} completion_tokens={output_tokens}'
+                    f'{budget_str}'
+                )
+
             # Many OpenAI-compatible/local models wrap JSON in a ```json fence even under a
             # structured response_format; strip it before parsing. Some also append prose
             # after the object, so extract the first complete object rather than bare-loading.
-            return self._extract_json(self._strip_code_fences(result))
+            parsed = self._extract_json(self._strip_code_fences(result))
+
+            return parsed
         except openai.RateLimitError as e:
             raise RateLimitError from e
         except Exception as e:
@@ -269,6 +302,7 @@ class LiteLLMClient(LLMClient):
         prompt_name: str | None = None,
         *,
         attribute_extraction: bool = False,
+        model: str | None = None,
     ) -> dict[str, typing.Any]:
         self._apply_attribute_extraction_preamble(messages, attribute_extraction)
         if max_tokens is None:
@@ -300,49 +334,100 @@ class LiteLLMClient(LLMClient):
                 attributes['prompt.name'] = prompt_name
             span.add_attributes(attributes)
 
-            # Track whether we've already flipped to json_object mode within this call so a
-            # provider that returns the schema even in fallback mode fails loudly instead of
-            # looping.
-            schema_fallback_attempted = False
-            while True:
-                try:
-                    # Delegate to the base tenacity wrapper so transient JSONDecodeError /
-                    # RateLimitError get backoff-retried (4 attempts) — most relevant in the
-                    # json_object fallback path for less-reliable providers. This is the clean
-                    # retry mechanism (same pattern as Gliner2Client); the old hand-rolled
-                    # re-prompt loop is intentionally not reinstated.
-                    response = await self._generate_response_with_retry(
-                        messages, response_model, max_tokens=max_tokens, model_size=model_size
-                    )
-                except Exception as e:
-                    span.set_status('error', str(e))
-                    span.record_exception(e)
-                    raise
+            # Compute prompt size estimate (after messages finalized, before API call)
+            prompt_name = prompt_name or 'unknown'
+            model_name = model or self.model or DEFAULT_MODEL
+            system_tokens = sum(estimate_tokens(m.content) for m in messages if m.role == 'system')
+            user_tokens = sum(estimate_tokens(m.content) for m in messages if m.role == 'user')
+            if response_model is not None and self.structured_output_mode == 'json_schema':
+                schema_tokens = estimate_tokens(json.dumps(response_model.model_json_schema()))
+            else:
+                schema_tokens = 0
+            estimate = {
+                'system': system_tokens,
+                'user': user_tokens,
+                'schema': schema_tokens,
+                'total': system_tokens + user_tokens + schema_tokens,
+            }
 
-                # Some providers (e.g. LiteLLM with Gemini) echo the JSON Schema definition
-                # back instead of data when json_schema is requested. Detect that, flip to
-                # json_object mode (schema injected into the prompt), and retry once.
-                if (
-                    response_model is not None
-                    and self.structured_output_mode == 'json_schema'
-                    and self._is_schema_returned_as_data(response)
-                ):
-                    if schema_fallback_attempted:
-                        raise ValueError(
-                            'Provider returned schema definition even in json_object fallback mode'
+            # Check budget before sending (log WARNING but still send; LiteLLM
+            # rejects authoritatively)
+            budget = self.input_token_budget()
+            if budget is not None and estimate['total'] > budget:
+                logger.warning(
+                    f'LLM prompt over input budget: prompt={prompt_name} '
+                    f'model={model_name} est_total={estimate["total"]} '
+                    f'budget={budget} max_input_tokens='
+                    f'{self.config.max_input_tokens if self.config else None}'
+                )
+
+            # Make context available to _generate_response (persists through retries)
+            ctx = {
+                'prompt_name': prompt_name,
+                'estimate': estimate,
+                'model': model_name,
+                'budget': budget,
+            }
+            token = _prompt_context.set(ctx)
+
+            try:
+                # Track whether we've already flipped to json_object mode within this call so a
+                # provider that returns the schema even in fallback mode fails loudly instead of
+                # looping.
+                schema_fallback_attempted = False
+                while True:
+                    try:
+                        # Delegate to the base tenacity wrapper so transient JSONDecodeError /
+                        # RateLimitError get backoff-retried (4 attempts) — most relevant in the
+                        # json_object fallback path for less-reliable providers. This is the clean
+                        # retry mechanism (same pattern as Gliner2Client); the old hand-rolled
+                        # re-prompt loop is intentionally not reinstated.
+                        response = await self._generate_response_with_retry(
+                            messages,
+                            response_model,
+                            max_tokens=max_tokens,
+                            model_size=model_size,
+                            model=model,
                         )
-                    logger.warning(
-                        'Provider returned schema definition instead of data. '
-                        'Switching to json_object mode with embedded schema.'
-                    )
-                    self.structured_output_mode = 'json_object'
-                    schema_fallback_attempted = True
-                    span.add_attributes({'structured_output.fallback_triggered': True})
-                    serialized_model = json.dumps(response_model.model_json_schema())
-                    messages[-1].content += (
-                        '\n\nRespond with a JSON object in the following format:'
-                        f'\n\n{serialized_model}'
-                    )
-                    continue
+                    except Exception as e:
+                        logger.warning(
+                            f'LLM call failed: prompt={prompt_name} '
+                            f'model={model_name} '
+                            f'est_total={estimate["total"]} '
+                            f'est_system={estimate["system"]} '
+                            f'est_user={estimate["user"]} '
+                            f'est_schema={estimate["schema"]}'
+                        )
+                        span.set_status('error', str(e))
+                        span.record_exception(e)
+                        raise
 
-                return response
+                    # Some providers (e.g. LiteLLM with Gemini) echo the JSON Schema definition
+                    # back instead of data when json_schema is requested. Detect that, flip to
+                    # json_object mode (schema injected into the prompt), and retry once.
+                    if (
+                        response_model is not None
+                        and self.structured_output_mode == 'json_schema'
+                        and self._is_schema_returned_as_data(response)
+                    ):
+                        if schema_fallback_attempted:
+                            raise ValueError(
+                                'Provider returned schema definition even in json_object fallback mode'
+                            )
+                        logger.warning(
+                            'Provider returned schema definition instead of data. '
+                            'Switching to json_object mode with embedded schema.'
+                        )
+                        self.structured_output_mode = 'json_object'
+                        schema_fallback_attempted = True
+                        span.add_attributes({'structured_output.fallback_triggered': True})
+                        serialized_model = json.dumps(response_model.model_json_schema())
+                        messages[-1].content += (
+                            '\n\nRespond with a JSON object in the following format:'
+                            f'\n\n{serialized_model}'
+                        )
+                        continue
+
+                    return response
+            finally:
+                _prompt_context.reset(token)

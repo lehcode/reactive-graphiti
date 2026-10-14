@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 async def edge_bfs_search(
     driver: GraphDriver,
-    bfs_origin_node_uuids: list[str],
+    bfs_origin_node_uuids: list[str] | None,
     bfs_max_depth: int,
     search_filter: SearchFilters,
     group_ids: list[str] | None = None,
@@ -45,6 +45,9 @@ async def edge_bfs_search(
             )
         except NotImplementedError:
             pass
+
+    if bfs_origin_node_uuids is None or len(bfs_origin_node_uuids) == 0:
+        return []
 
     filter_queries, filter_params = edge_search_filter_query_constructor(
         search_filter, driver.provider
@@ -127,7 +130,7 @@ async def edge_bfs_search(
 
 async def node_bfs_search(
     driver: GraphDriver,
-    bfs_origin_node_uuids: list[str],
+    bfs_origin_node_uuids: list[str] | None,
     search_filter: SearchFilters,
     bfs_max_depth: int,
     group_ids: list[str] | None = None,
@@ -140,6 +143,9 @@ async def node_bfs_search(
             )
         except NotImplementedError:
             pass
+
+    if bfs_origin_node_uuids is None or len(bfs_origin_node_uuids) == 0 or bfs_max_depth < 1:
+        return []
 
     filter_queries, filter_params = node_search_filter_query_constructor(
         search_filter, driver.provider

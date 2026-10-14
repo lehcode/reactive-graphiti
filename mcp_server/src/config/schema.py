@@ -152,6 +152,13 @@ class LLMConfig(BaseModel):
         default=None, description='Temperature (optional, defaults to None for reasoning models)'
     )
     max_tokens: int = Field(default=4096, description='Max tokens')
+    max_input_tokens: int | None = Field(
+        default=None,
+        description=(
+            'Model input-token limit for budgeting. Resolved from /model/info at startup; '
+            'None = no budgeting, fallback when lookup fails.'
+        ),
+    )
     structured_output_mode: Literal['json_schema', 'json_object'] = Field(
         default='json_schema',
         description=(
