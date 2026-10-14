@@ -414,7 +414,7 @@ async def episode_fulltext_search(
 ) -> list[EpisodicNode]:
     if driver.search_interface:
         return await driver.search_interface.episode_fulltext_search(
-            driver, query, group_ids, limit
+            driver, query, _search_filter, group_ids, limit
         )
 
     # fulltext search over facts
