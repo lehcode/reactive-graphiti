@@ -33,8 +33,9 @@ from graphiti_core.cross_encoder.client import CrossEncoderClient
 
 
 class BGERerankerClient(CrossEncoderClient):
-    def __init__(self):
-        self.model = CrossEncoder('BAAI/bge-reranker-v2-m3')
+    def __init__(self, model_name: str = 'BAAI/bge-reranker-v2-m3', device: str | None = None):
+        self.model = CrossEncoder(model_name, device=device)
+        self.model_name = model_name
 
     async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
         if not passages:
