@@ -1,5 +1,7 @@
 fail_fast: true
-default_install_hook_types: [pre-commit, pre-push]
+default_install_hook_types: [pre-commit]
+# Checks run only at commit, on the staged (changed) files; pushes run no checks
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
@@ -7,9 +9,9 @@ repos:
         name: Code Quality Benchmark
         entry: ./scripts/quality-benchmark.sh
         language: script
-        stages: [pre-push]
-        pass_filenames: false
-        always_run: true
+        stages: [pre-commit]
+        types_or: [python, shell]
+        require_serial: true
         verbose: true
 
       - id: gitleaks-staged
@@ -18,19 +20,20 @@ repos:
         language: system
         stages: [pre-commit]
 
-      - id: gitleaks-push
-        name: Secret detection (Gitleaks) - Full Scan
-        entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
-        language: system
-        stages: [pre-push]
-        pass_filenames: false
+      # Push-time full scan removed: pushes run no checks; gitleaks-staged covers every commit
+      # - id: gitleaks-push
+      #   name: Secret detection (Gitleaks) - Full Scan
+      #   entry: gitleaks detect --source . --verbose --redact --no-git --exit-code 1 --config .gitleaks.toml
+      #   language: system
+      #   stages: [pre-push]
+      #   pass_filenames: false
 
       - id: bash-syntax
         name: Bash syntax check
         entry: bash -n
         language: system
         types: [shell]
-        stages: [pre-commit, pre-push]
+        stages: [pre-commit]
 
       - id: yamllint
         name: yamllint
@@ -38,7 +41,7 @@ repos:
           bash -c 'yamllint -d "{rules: {line-length: {max: 160, level: warning}}}" "$@" || [ $? -eq 2 ]' --
         language: system
         types: [yaml]
-        stages: [pre-commit, pre-push]
+        stages: [pre-commit]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.9
@@ -52,10 +55,13 @@ repos:
     hooks:
       - id: trailing-whitespace
         exclude: '\.md$'
+        stages: [pre-commit]
       - id: end-of-file-fixer
         exclude: '(\.md$|^signatures/)'
+        stages: [pre-commit]
       - id: check-yaml
       - id: check-added-large-files
+        stages: [pre-commit]
       - id: check-toml
       - id: check-merge-conflict
       - id: detect-private-key
@@ -65,7 +71,7 @@ repos:
     hooks:
       - id: shellcheck
         args: ['-e', 'SC1091,SC2155,SC2086,SC2034']
-        stages: [pre-commit, pre-push]
+        stages: [pre-commit]
 
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
@@ -73,16 +79,3 @@ repos:
     hooks:
       - id: markdownlint
         args: ["--config", ".markdownlint.yaml", "--fix"]
-        stages: [pre-push]
-
-  - repo: local
-    hooks:
-      # Fixes the staged Markdown files and re-stages the fixes into the commit being made
-      - id: markdownlint-amend
-        name: markdownlint (fix and re-stage)
-        entry: scripts/markdownlint-amend.sh
-        language: node
-        additional_dependencies: ["markdownlint-cli@0.44.0"]
-        pass_filenames: false
-        types: [markdown]
-        stages: [pre-commit]

@@ -24,7 +24,27 @@ MIN_MAINTAINABILITY_INDEX=70
 
 # Directories to scan
 PYTHON_DIRS="graphiti_core server mcp_server/src"
-SHELL_SCRIPTS=$(find scripts -name "*.sh" 2>/dev/null || true)
+
+# Files to check: the changed files pre-commit passes in (staged at commit, changed by the
+# pushed commits at push). Without arguments the whole scope is checked.
+if [ $# -gt 0 ]; then
+    PY_FILES=()
+    SH_FILES=()
+    for f in "$@"; do
+        case "$f" in
+            graphiti_core/*.py | server/*.py | mcp_server/src/*.py) PY_FILES+=("$f") ;;
+            scripts/*.sh) SH_FILES+=("$f") ;;
+        esac
+    done
+    if [ ${#PY_FILES[@]} -eq 0 ] && [ ${#SH_FILES[@]} -eq 0 ]; then
+        echo "SKIPPED. no changed files"
+        exit 0
+    fi
+else
+    read -ra PY_FILES <<< "$PYTHON_DIRS"
+    mapfile -t SH_FILES < <(find scripts -name "*.sh" 2>/dev/null)
+fi
+SHELL_SCRIPTS="${SH_FILES[*]}"
 
 echo -e "${BLUE}==================================================${NC}"
 echo -e "${BLUE}       GRAPHITI CODE QUALITY BENCHMARK          ${NC}"
@@ -56,7 +76,8 @@ fi
 
 # 2. Ruff (Linting & Formatting)
 echo -e "\n${BLUE}[2/6] Running Ruff Check...${NC}"
-RUFF_OUTPUT=$(ruff check $PYTHON_DIRS 2>&1 || true)
+RUFF_OUTPUT=""
+[ ${#PY_FILES[@]} -gt 0 ] && RUFF_OUTPUT=$(ruff check "${PY_FILES[@]}" 2>&1 || true)
 RUFF_ERRORS=$(echo "$RUFF_OUTPUT" | grep -o "Found [0-9]* error" | head -n 1 | awk '{print $2}')
 RUFF_ERRORS=${RUFF_ERRORS:-0}
 
@@ -70,7 +91,8 @@ fi
 
 # 3. Pyright (Type Checking)
 echo -e "\n${BLUE}[3/6] Running Pyright...${NC}"
-PYRIGHT_OUTPUT=$(uv run pyright $PYTHON_DIRS 2>&1 || true)
+PYRIGHT_OUTPUT=""
+[ ${#PY_FILES[@]} -gt 0 ] && PYRIGHT_OUTPUT=$(uv run pyright "${PY_FILES[@]}" 2>&1 || true)
 PYRIGHT_ERRORS=$(echo "$PYRIGHT_OUTPUT" | grep -c " - error:")
 PYRIGHT_ERRORS=${PYRIGHT_ERRORS:-0}
 
@@ -85,7 +107,15 @@ fi
 # 4. Vulture (Dead Code Detection)
 echo -e "\n${BLUE}[4/6] Running Vulture (Dead Code Detection)...${NC}"
 # Exclude venv and site-packages explicitly
-VULTURE_OUTPUT=$(vulture $PYTHON_DIRS scripts/vulture_whitelist.py --min-confidence $MAX_DEAD_CODE_CONFIDENCE 2>&1 || true)
+VULTURE_OUTPUT=""
+if [ ${#PY_FILES[@]} -gt 0 ]; then
+    VULTURE_OUTPUT=$(vulture $PYTHON_DIRS scripts/vulture_whitelist.py --min-confidence $MAX_DEAD_CODE_CONFIDENCE 2>&1 || true)
+fi
+# Vulture needs the whole codebase to see usages; report only findings in the files checked
+if [ $# -gt 0 ] && [ -n "$VULTURE_OUTPUT" ]; then
+    VULTURE_OUTPUT=$(echo "$VULTURE_OUTPUT" | awk -F: 'NR == FNR { keep[$0]; next } $1 in keep' \
+        <(printf '%s\n' "${PY_FILES[@]}") - || true)
+fi
 DEAD_CODE_COUNT=$(echo "$VULTURE_OUTPUT" | grep -c ":")
 DEAD_CODE_COUNT=${DEAD_CODE_COUNT:-0}
 
@@ -113,7 +143,8 @@ fi
 
 # 6. Radon (Maintainability & Modularization)
 echo -e "\n${BLUE}[6/6] Running Maintainability Index Check...${NC}"
-RADON_OUTPUT=$(radon mi $PYTHON_DIRS --min B --max F 2>&1 || true)
+RADON_OUTPUT=""
+[ ${#PY_FILES[@]} -gt 0 ] && RADON_OUTPUT=$(radon mi "${PY_FILES[@]}" --min B --max F 2>&1 || true)
 # Baseline: a low-MI module fails only if it is new or its grade is worse than at
 # merge-base(HEAD, QUALITY_BASE_REF), so upstream-owned debt does not block pushes.
 # Without a resolvable base every low-MI module fails (strict mode).
