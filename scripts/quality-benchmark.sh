@@ -85,7 +85,7 @@ fi
 # 4. Vulture (Dead Code Detection)
 echo -e "\n${BLUE}[4/6] Running Vulture (Dead Code Detection)...${NC}"
 # Exclude venv and site-packages explicitly
-VULTURE_OUTPUT=$(vulture $PYTHON_DIRS --min-confidence $MAX_DEAD_CODE_CONFIDENCE 2>&1 || true)
+VULTURE_OUTPUT=$(vulture $PYTHON_DIRS scripts/vulture_whitelist.py --min-confidence $MAX_DEAD_CODE_CONFIDENCE 2>&1 || true)
 DEAD_CODE_COUNT=$(echo "$VULTURE_OUTPUT" | grep -c ":")
 DEAD_CODE_COUNT=${DEAD_CODE_COUNT:-0}
 
