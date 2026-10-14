@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-import json
 import logging
 from datetime import datetime
 from time import time
@@ -41,28 +40,21 @@ from graphiti_core.nodes import CommunityNode, EntityNode, EpisodicNode
 from graphiti_core.prompts import prompt_library
 from graphiti_core.prompts.dedupe_edges import EdgeDuplicate
 from graphiti_core.prompts.extract_edges import Edge as ExtractedEdge
-from graphiti_core.prompts.extract_edges import EdgeTimestamps, ExtractedEdges
+from graphiti_core.prompts.extract_edges import EdgeTimestamps
 from graphiti_core.search.search import search
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.search.search_config_recipes import EDGE_HYBRID_SEARCH_RRF
 from graphiti_core.search.search_filters import SearchFilters
-from graphiti_core.utils.content_chunking import estimate_tokens, generate_covering_chunks
 from graphiti_core.utils.datetime_utils import ensure_utc, utc_now
 from graphiti_core.utils.maintenance.attribute_utils import apply_capped_attributes
 from graphiti_core.utils.maintenance.dedup_helpers import _normalize_string_exact
-from graphiti_core.utils.text_utils import (
-    build_previous_episodes_context,
-    concatenate_episodes,
-    remaining_budget_for_previous_episodes,
+from graphiti_core.utils.maintenance.edge_budget import (
+    extract_edges_by_budget,
+    trim_resolution_candidates,
 )
-from graphiti_core.utils.token_budget import pack_by_budget
+from graphiti_core.utils.text_utils import concatenate_episodes
 
 logger = logging.getLogger(__name__)
-
-# Upper bound on sequential LLM calls when edge extraction is split into covering chunks.
-# Covering all node pairs needs about n^2 / k^2 chunks, which grows fast when the budget
-# leaves room for few nodes; beyond this bound one over-budget call is sent instead.
-MAX_EDGE_EXTRACTION_CHUNKS = 16
 
 
 def build_episodic_edges(
@@ -196,11 +188,10 @@ async def extract_edges(
             'A fact sourced from Episodes 0 and 1 should have `episode_indices: [0, 1]`.'
         )
 
-    # Build latest episode (needed for context and reference_time)
+    # Prepare context for LLM
+    # Use the latest episode's timestamp as the primary reference time
     latest_episode = max(episodes, key=lambda ep: ep.valid_at)
-
-    # Base context without nodes for budget estimation
-    base_cost_context = {
+    context = {
         'episode_content': concatenate_episodes(episodes),
         'nodes': [],
         'previous_episodes': [],
@@ -209,147 +200,17 @@ async def extract_edges(
         'custom_extraction_instructions': (custom_extraction_instructions or '')
         + episode_attribution,
     }
-    messages = prompt_library.extract_edges.edge(base_cost_context)
-    fixed_cost = sum(
-        estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
+
+    # Nodes and previous episodes are sized to the input-token budget (fork-specific)
+    all_edges_data = await extract_edges_by_budget(
+        llm_client,
+        context,
+        nodes,
+        previous_episodes,
+        clients=clients,
+        max_tokens=extract_edges_max_tokens,
+        group_id=group_id or primary_episode.group_id,
     )
-    fixed_cost += estimate_tokens(json.dumps(ExtractedEdges.model_json_schema()))
-
-    # Per-node cost: serialized node dict in prompt
-    def _node_cost(node: EntityNode) -> int:
-        entry = {'name': node.name, 'entity_types': node.labels}
-        return estimate_tokens(json.dumps(entry))
-
-    input_budget = llm_client.input_token_budget()
-    nodes_context: list[dict] = [{'name': n.name, 'entity_types': n.labels} for n in nodes]
-
-    # Covering chunks only when the nodes do not fit next to the fixed prompt
-    node_costs = [_node_cost(n) for n in nodes]
-    chunks: list[tuple[list[EntityNode], list[int]]] | None = None
-    if (
-        isinstance(input_budget, int)
-        and len(nodes) > 2
-        and fixed_cost + sum(node_costs) > input_budget
-    ):
-        # Every pair of nodes must share a chunk, so a chunk holds at least 2 nodes
-        k = (input_budget - fixed_cost) // max(max(node_costs), 1)
-        if k < 2:
-            logger.warning(
-                'extract_edges: budget %d leaves room for %d nodes after fixed cost %d; '
-                'using chunks of 2 (requests will exceed the budget)',
-                input_budget,
-                max(k, 0),
-                fixed_cost,
-            )
-        k = min(max(k, 2), len(nodes) - 1)
-        chunks = generate_covering_chunks(nodes, k)
-        if len(chunks) > MAX_EDGE_EXTRACTION_CHUNKS:
-            logger.warning(
-                'extract_edges: %d nodes need %d covering chunks of %d (limit %d); '
-                'sending one call over the input-token budget instead',
-                len(nodes),
-                len(chunks),
-                k,
-                MAX_EDGE_EXTRACTION_CHUNKS,
-            )
-            chunks = None
-    if chunks is not None:
-        # Issue LLM call for each chunk and collect all edges
-        all_edges_data: list[ExtractedEdge] = []
-        for _chunk_items, chunk_indices in chunks:
-            chunk_node_context = [
-                {'name': nodes[i].name, 'entity_types': nodes[i].labels} for i in chunk_indices
-            ]
-            chunk_base_context = dict(base_cost_context)
-            chunk_base_context['nodes'] = chunk_node_context
-
-            # Compute remaining budget for this chunk's node context
-            chunk_budget = remaining_budget_for_previous_episodes(
-                llm_client,
-                prompt_library.extract_edges.edge,
-                chunk_base_context,
-                response_model=ExtractedEdges,
-            )
-
-            chunk_context = dict(chunk_base_context)
-            chunk_context['previous_episodes'] = build_previous_episodes_context(
-                previous_episodes, chunk_budget
-            )
-
-            # Failures propagate, as in the single-call path
-            chunk_response = await generate_prompt_response(
-                llm_client,
-                'extract_edges.edge',
-                prompt_library.extract_edges.edge,
-                chunk_context,
-                clients=clients,
-                response_model=ExtractedEdges,
-                max_tokens=extract_edges_max_tokens,
-                group_id=group_id or primary_episode.group_id,
-            )
-            all_edges_data.extend(ExtractedEdges(**chunk_response).edges)
-
-        # Pairs shared by several chunks can yield the same edge more than once. Unknown
-        # entity names are kept and handled downstream, as for single-call output.
-        raw_count = len(all_edges_data)
-        deduped_edges: list[ExtractedEdge] = []
-        seen_keys: set[tuple[str, str, str]] = set()
-        for edge_data in all_edges_data:
-            key = (
-                edge_data.source_entity_name,
-                edge_data.target_entity_name,
-                _normalize_string_exact(edge_data.fact),
-            )
-            if key not in seen_keys:
-                seen_keys.add(key)
-                deduped_edges.append(edge_data)
-        all_edges_data = deduped_edges
-
-        logger.debug(
-            'extract_edges: %d nodes in %d covering chunks of <=%d, %d raw -> %d deduped edges',
-            len(nodes),
-            len(chunks),
-            k,
-            raw_count,
-            len(all_edges_data),
-        )
-    else:
-        # Single-shot extraction (fallback or budget permits all nodes)
-        all_edges_data = []
-        base_context = dict(base_cost_context)
-        base_context['nodes'] = nodes_context
-
-        # Compute remaining budget
-        budget_tokens = remaining_budget_for_previous_episodes(
-            llm_client,
-            prompt_library.extract_edges.edge,
-            base_context,
-            response_model=ExtractedEdges,
-        )
-
-        context = dict(base_context)
-        context['previous_episodes'] = build_previous_episodes_context(
-            previous_episodes, budget_tokens
-        )
-
-        logger.debug(
-            'extract_edges: budget=%s episodes=%d/%d',
-            budget_tokens,
-            len(context['previous_episodes']),
-            len(previous_episodes),
-        )
-
-        llm_response = await generate_prompt_response(
-            llm_client,
-            'extract_edges.edge',
-            prompt_library.extract_edges.edge,
-            context,
-            clients=clients,
-            response_model=ExtractedEdges,
-            max_tokens=extract_edges_max_tokens,
-            group_id=group_id or primary_episode.group_id,
-        )
-        all_edges_data = ExtractedEdges(**llm_response).edges
 
     # Validate entity names
     edges_data: list[ExtractedEdge] = []
@@ -853,6 +714,11 @@ async def resolve_extracted_edge(
 
     start = time()
 
+    # Keep the highest-ranked candidates within the input-token budget (fork-specific)
+    related_edges, existing_edges = trim_resolution_candidates(
+        llm_client, extracted_edge.fact, related_edges, existing_edges
+    )
+
     # Prepare context for LLM with continuous indexing
     related_edges_context = [{'idx': i, 'fact': edge.fact} for i, edge in enumerate(related_edges)]
 
@@ -862,73 +728,6 @@ async def resolve_extracted_edge(
         {'idx': invalidation_idx_offset + i, 'fact': existing_edge.fact}
         for i, existing_edge in enumerate(existing_edges)
     ]
-
-    input_budget = llm_client.input_token_budget()
-    # Budget-aware candidate trimming
-    if isinstance(input_budget, int) and (related_edges or existing_edges):
-        # Compute fixed_cost: render with empty candidates + schema
-        cost_context = {
-            'existing_edges': [],
-            'new_edge': extracted_edge.fact,
-            'edge_invalidation_candidates': [],
-        }
-        messages = prompt_library.dedupe_edges.resolve_edge(cost_context)
-        fixed_cost = sum(
-            estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages
-        )
-        fixed_cost += estimate_tokens(json.dumps(EdgeDuplicate.model_json_schema()))
-
-        # Per-candidate cost
-        def _edge_cost(entry: dict) -> int:
-            return estimate_tokens(json.dumps(entry))
-
-        # Pack candidates into budget (related_edges first, then invalidation)
-        all_candidates = related_edges_context + [
-            {'idx': invalidation_idx_offset + i, 'fact': e.fact}
-            for i, e in enumerate(existing_edges)
-        ]
-
-        batches = pack_by_budget(
-            all_candidates,
-            cost=_edge_cost,
-            budget=input_budget,
-            fixed_cost=fixed_cost,
-            max_items=len(all_candidates),
-        )
-
-        # Take the first batch (highest-ranked candidates)
-        trimmed = batches[0] if batches else all_candidates[:1]
-
-        # Determine how many related vs invalidation in trimmed batch
-        trimmed_related = [c for c in trimmed if c['idx'] < invalidation_idx_offset]
-        trimmed_invalidation = [c for c in trimmed if c['idx'] >= invalidation_idx_offset]
-
-        related_edges_context = trimmed_related
-        invalidation_edge_candidates_context = trimmed_invalidation
-
-        # Create trimmed edge lists for later access
-        trimmed_related_edges = [related_edges[c['idx']] for c in trimmed_related]
-        trimmed_invalidation_edges = [
-            existing_edges[c['idx'] - invalidation_idx_offset] for c in trimmed_invalidation
-        ]
-
-        dropped_related = len(related_edges) - len(trimmed_related_edges)
-        dropped_invalidation = len(existing_edges) - len(trimmed_invalidation_edges)
-        if dropped_related or dropped_invalidation:
-            # Dropped candidates cannot be marked duplicate or contradicted by this call
-            logger.debug(
-                'resolve_extracted_edge: input-token budget %d dropped %d of %d EXISTING FACTS '
-                'and %d of %d INVALIDATION CANDIDATES (lowest ranked)',
-                input_budget,
-                dropped_related,
-                len(related_edges),
-                dropped_invalidation,
-                len(existing_edges),
-            )
-
-        invalidation_idx_offset = len(trimmed_related_edges)
-        related_edges = trimmed_related_edges
-        existing_edges = trimmed_invalidation_edges
 
     context = {
         'existing_edges': related_edges_context,

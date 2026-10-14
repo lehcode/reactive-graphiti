@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from graphiti_core import graphiti as graphiti_module
 from graphiti_core.edges import EntityEdge, EpisodicEdge
 from graphiti_core.graphiti import AddEpisodeResults, Graphiti
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode, SagaNode
+from graphiti_core.utils import episode_splitting
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 # Default ratio 0.4 -> threshold and chunk size of 400 tokens (~1600 chars).
@@ -189,7 +189,7 @@ async def test_chunker_matches_source_with_budget_sized_chunks_and_positive_over
     graphiti, calls = _make_graphiti()
     chunker = MagicMock(return_value=['part one', 'part two'])
 
-    with patch.object(graphiti_module, chunker_name, chunker):
+    with patch.object(episode_splitting, chunker_name, chunker):
         await _add(graphiti, source=source)
 
     chunker.assert_called_once()
@@ -217,7 +217,7 @@ async def test_json_parts_are_valid_json():
 async def test_unsplittable_oversized_body_is_processed_once_as_is():
     graphiti, calls = _make_graphiti()
 
-    with patch.object(graphiti_module, 'chunk_text_content', return_value=[LONG_TEXT]):
+    with patch.object(episode_splitting, 'chunk_text_content', return_value=[LONG_TEXT]):
         await _add(graphiti, saga_previous_episode_uuid='prev-uuid')
 
     assert graphiti._add_episode_internal.await_count == 1
@@ -269,7 +269,7 @@ async def test_results_are_aggregated_across_parts():
     ]
     graphiti, _ = _make_graphiti(results=results)
 
-    with patch.object(graphiti_module, 'chunk_text_content', return_value=['a', 'b']):
+    with patch.object(episode_splitting, 'chunk_text_content', return_value=['a', 'b']):
         result = await _add(graphiti)
 
     assert result.episode is last

@@ -13,7 +13,11 @@ import pytest
 
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
-from graphiti_core.utils.maintenance import edge_operations, node_operations
+from graphiti_core.utils.maintenance import (
+    edge_budget,
+    node_budget,
+    node_operations,
+)
 from graphiti_core.utils.maintenance.dedup_helpers import DedupResolutionState
 from graphiti_core.utils.maintenance.edge_operations import (
     extract_edges,
@@ -60,7 +64,7 @@ def _capture_prompt(monkeypatch, target: str) -> list[dict]:
 
 @pytest.fixture
 def flat_estimate(monkeypatch):
-    for module in (node_operations, edge_operations):
+    for module in (node_budget, edge_budget):
         monkeypatch.setattr(module, 'estimate_tokens', lambda _text: TOKENS_PER_STRING)
 
 
@@ -320,7 +324,7 @@ async def test_resolve_edge_trims_related_edges_and_logs(monkeypatch, flat_estim
     llm_client = _llm_client(FIXED_COST + 2 * TOKENS_PER_STRING)
     llm_client.generate_response.return_value = {'duplicate_facts': [1], 'contradicted_facts': []}
 
-    with caplog.at_level(logging.DEBUG, logger=edge_operations.logger.name):
+    with caplog.at_level(logging.DEBUG, logger=edge_budget.logger.name):
         resolved, invalidated, duplicates = await resolve_extracted_edge(
             llm_client, _edge('new fact'), related, existing, _episode()
         )
@@ -338,7 +342,7 @@ async def test_resolve_edge_trims_related_edges_and_logs(monkeypatch, flat_estim
 async def test_extract_edges_falls_back_to_one_call_above_chunk_limit(
     monkeypatch, flat_estimate, caplog
 ):
-    monkeypatch.setattr(edge_operations, 'MAX_EDGE_EXTRACTION_CHUNKS', 2)
+    monkeypatch.setattr(edge_budget, 'MAX_EDGE_EXTRACTION_CHUNKS', 2)
     nodes = _nodes(6)
 
     # Room for 2 nodes per call -> 15 pair chunks, above the limit of 2
@@ -352,7 +356,26 @@ async def test_extract_edges_falls_back_to_one_call_above_chunk_limit(
     assert 'covering chunks' in caplog.text
 
 
-# --- summary flights (_build_budget_flights) ------------------------------------------------
+# --- summary flights (node_budget.pack_summary_flights) ------------------------------------
+
+
+def _build_budget_flights(
+    nodes: list[EntityNode],
+    max_items: int,
+    llm_client,
+    *,
+    episode=None,
+    entity_types=None,
+    use_episode_prompt: bool = False,
+) -> list[list[EntityNode]]:
+    """Pack flights with the prompt and base context _extract_entity_summaries_batch sends."""
+    return node_budget.pack_summary_flights(
+        nodes,
+        max_items,
+        llm_client,
+        node_budget.summary_prompt(use_episode_prompt)[1],
+        node_operations._summary_base_context(episode, entity_types),
+    )
 
 
 def _summary_nodes(count: int, **attributes) -> list[EntityNode]:
@@ -379,10 +402,8 @@ def test_flights_count_episode_content_as_fixed_cost():
     llm_client = _llm_client(None)
     # Fixed cost ~700 tokens with the short episode, ~2200 with the long one; nodes ~23 each
     llm_client.input_token_budget.return_value = 2300
-    short = node_operations._build_budget_flights(
-        nodes, 30, llm_client, episode=_budget_episode('Short.')
-    )
-    long = node_operations._build_budget_flights(
+    short = _build_budget_flights(nodes, 30, llm_client, episode=_budget_episode('Short.'))
+    long = _build_budget_flights(
         nodes, 30, llm_client, episode=_budget_episode('Long sentence here. ' * 300)
     )
 
@@ -396,7 +417,7 @@ def test_flights_not_multiplied_when_episode_alone_exceeds_budget(caplog):
     llm_client = _llm_client(1000)
 
     with caplog.at_level(logging.WARNING):
-        flights = node_operations._build_budget_flights(
+        flights = _build_budget_flights(
             nodes, 5, llm_client, episode=_budget_episode('Long sentence here. ' * 1000)
         )
 
@@ -427,10 +448,8 @@ def test_flights_measure_the_episode_prompt_when_it_is_sent(monkeypatch):
     )
     llm_client = _llm_client(10_000)
 
-    node_operations._build_budget_flights(
-        _summary_nodes(2), 30, llm_client, use_episode_prompt=True
-    )
-    node_operations._build_budget_flights(_summary_nodes(2), 30, llm_client)
+    _build_budget_flights(_summary_nodes(2), 30, llm_client, use_episode_prompt=True)
+    _build_budget_flights(_summary_nodes(2), 30, llm_client)
 
     assert rendered == ['episodes', 'batch']
 
@@ -438,7 +457,7 @@ def test_flights_measure_the_episode_prompt_when_it_is_sent(monkeypatch):
 def test_flights_tolerate_non_json_attributes():
     nodes = _summary_nodes(3, seen_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
 
-    flights = node_operations._build_budget_flights(nodes, 30, _llm_client(10_000))
+    flights = _build_budget_flights(nodes, 30, _llm_client(10_000))
 
     assert [n.uuid for flight in flights for n in flight] == [n.uuid for n in nodes]
 
@@ -447,11 +466,13 @@ def test_flights_tolerate_non_json_attributes():
 async def test_summary_batch_passes_flight_inputs(monkeypatch):
     captured: dict = {}
 
-    def spy_flights(nodes, max_items, llm_client, **kwargs):
-        captured.update(kwargs, max_items=max_items)
+    def spy_flights(nodes, max_items, llm_client, prompt_builder, base_context):
+        captured.update(
+            max_items=max_items, prompt_builder=prompt_builder, base_context=base_context
+        )
         return []
 
-    monkeypatch.setattr(node_operations, '_build_budget_flights', spy_flights)
+    monkeypatch.setattr(node_operations, 'pack_summary_flights', spy_flights)
     episode = _episode()
     entity_types = {'Person': MagicMock(__doc__='A person.')}
 
@@ -467,8 +488,8 @@ async def test_summary_batch_passes_flight_inputs(monkeypatch):
     )
 
     assert captured == {
-        'episode': episode,
-        'entity_types': entity_types,
-        'use_episode_prompt': True,
         'max_items': node_operations.MAX_NODES,
+        # skip_fact_appending=True sends the episode prompt
+        'prompt_builder': node_budget.summary_prompt(True)[1],
+        'base_context': node_operations._summary_base_context(episode, entity_types),
     }

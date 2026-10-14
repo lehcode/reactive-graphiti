@@ -993,10 +993,9 @@ async def test_extract_attributes_preserves_prior_attributes_when_label_not_in_e
 
 @pytest.mark.asyncio
 async def test_build_budget_flights_falls_back_when_no_budget():
-    """When input_token_budget returns None, _build_budget_flights uses fixed-size chunks."""
-    from graphiti_core.utils.maintenance.node_operations import (
-        _build_budget_flights,
-    )
+    """When input_token_budget returns None, pack_summary_flights uses fixed-size chunks."""
+    from graphiti_core.utils.maintenance.node_budget import pack_summary_flights, summary_prompt
+    from graphiti_core.utils.maintenance.node_operations import _summary_base_context
 
     llm_client = MagicMock()
     llm_client.input_token_budget.return_value = None
@@ -1006,7 +1005,9 @@ async def test_build_budget_flights_falls_back_when_no_budget():
         for i in range(7)
     ]
 
-    flights = _build_budget_flights(nodes, 3, llm_client)
+    flights = pack_summary_flights(
+        nodes, 3, llm_client, summary_prompt(False)[1], _summary_base_context(None, None)
+    )
     assert len(flights) == 3
     assert [f[0].name for f in flights] == ['Node0', 'Node3', 'Node6']
 
@@ -1015,7 +1016,8 @@ async def test_build_budget_flights_falls_back_when_no_budget():
 async def test_build_budget_flights_respects_max_items(monkeypatch):
     """max_items parameter caps the number of nodes per flight."""
     from graphiti_core.utils.content_chunking import estimate_tokens
-    from graphiti_core.utils.maintenance.node_operations import _build_budget_flights
+    from graphiti_core.utils.maintenance.node_budget import pack_summary_flights, summary_prompt
+    from graphiti_core.utils.maintenance.node_operations import _summary_base_context
 
     llm_client = MagicMock()
     llm_client.input_token_budget.return_value = 80000  # plenty of budget
@@ -1031,11 +1033,13 @@ async def test_build_budget_flights_respects_max_items(monkeypatch):
         return estimate_tokens(text)
 
     monkeypatch.setattr(
-        'graphiti_core.utils.maintenance.node_operations.estimate_tokens',
+        'graphiti_core.utils.maintenance.node_budget.estimate_tokens',
         mock_estimate,
     )
 
-    flights = _build_budget_flights(nodes, 3, llm_client)
+    flights = pack_summary_flights(
+        nodes, 3, llm_client, summary_prompt(False)[1], _summary_base_context(None, None)
+    )
     assert len(flights) == 3  # 8 nodes / 3 per flight = 3 batches
     assert all(len(f) <= 3 for f in flights)
 
@@ -1129,10 +1133,10 @@ async def test_resolve_with_llm_reindexed_batch_mapping(monkeypatch):
 
     with (
         patch(
-            'graphiti_core.utils.maintenance.node_operations.generate_prompt_response',
+            'graphiti_core.utils.maintenance.node_budget.generate_prompt_response',
             AsyncMock(side_effect=track_calls),
         ),
-        patch('graphiti_core.utils.maintenance.node_operations.estimate_tokens', mock_estimate),
+        patch('graphiti_core.utils.maintenance.node_budget.estimate_tokens', mock_estimate),
     ):
         await _resolve_with_llm(
             llm_client,
@@ -1206,10 +1210,10 @@ async def test_resolve_with_llm_batch_offset_prevents_aliasing(monkeypatch):
 
     with (
         patch(
-            'graphiti_core.utils.maintenance.node_operations.generate_prompt_response',
+            'graphiti_core.utils.maintenance.node_budget.generate_prompt_response',
             AsyncMock(side_effect=track_calls),
         ),
-        patch('graphiti_core.utils.maintenance.node_operations.estimate_tokens', mock_estimate),
+        patch('graphiti_core.utils.maintenance.node_budget.estimate_tokens', mock_estimate),
     ):
         await _resolve_with_llm(
             llm_client,
