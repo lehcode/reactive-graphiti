@@ -12,6 +12,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Root `Dockerfile` builds the FastAPI `server/` image and installs `graphiti-core` **from PyPI**, not local source. MCP images live in `mcp_server/docker/`.
 - `scripts/quality-benchmark.sh` — manual quality gate (shellcheck, ruff, pyright, dead code, duplication) over `graphiti_core server mcp_server/src`; fails on any ruff/type error. Not wired into CI.
 
+## Git
+
+- `--no-verify` is strictly prohibited on every commit and push. When a hook fails (incl. the pre-push `scripts/quality-benchmark.sh`), fix the cause or stop and ask the user.
+
 ## Architecture
 
 ### Ingestion (`graphiti_core/graphiti.py`)
