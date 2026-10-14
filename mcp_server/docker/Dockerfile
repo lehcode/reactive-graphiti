@@ -1,17 +1,16 @@
 # syntax=docker/dockerfile:1
-# Combined FalkorDB + Graphiti MCP Server Image
-# This extends the official FalkorDB image to include the MCP server
+# Fork-core Graphiti MCP Server Image
+# This image runs only the MCP server and connects to an external database (Neo4j or FalkorDB).
+# It builds on the fork's graphiti-core, overwriting the PyPI graphiti-core installed by
+# mcp_server/pyproject.toml.
+#
+# Build:
+#   docker build -f mcp_server/docker/Dockerfile .
 
-FROM falkordb/falkordb:latest AS falkordb-base
+FROM python:3.11-slim-bookworm
 
-# Install Python and system dependencies
-# Note: Debian 13 "trixie" (FalkorDB base) ships with Python 3.13.
-# procps is omitted: its postinst runs update-rc.d (a perl script), and the
-# FalkorDB base image no longer ships perl (purged upstream for CVE reduction).
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-dev \
-    python3-pip \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -51,12 +50,11 @@ WORKDIR /app/mcp
 # Accept graphiti-core version as build argument
 ARG GRAPHITI_CORE_VERSION
 ARG SOCKET_FIREWALL_ENABLED=false
-# Unique per release run so enforced builds re-resolve and re-download instead
-# of reusing cached layers, which sfw would never see.
 ARG SOCKET_SCAN_ID=
 
+# ── Layer A: Install MCP server dependencies (PyPI graphiti-core) ────────────
 # Copy project files for dependency installation
-COPY pyproject.toml uv.lock ./
+COPY mcp_server/pyproject.toml mcp_server/uv.lock ./
 
 # Install Python dependencies using repo's own pyproject.toml + uv.lock
 # Include optional provider extras so the image matches the providers
@@ -81,71 +79,42 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi; \
     $UV_CMD sync --no-group dev --extra providers --extra azure
 
-# Record build-time version from env arg
-RUN echo "${GRAPHITI_CORE_VERSION:-unknown}" > /app/mcp/.graphiti-core-version
+# ── Layer B: Overwrite with fork graphiti-core ───────────────────────────────
+# Copy the fork's core package into /app/core and pip-install it on top of
+# the PyPI graphiti-core that was just installed.
+COPY pyproject.toml README.md LICENSE /app/core/
+COPY graphiti_core/ /app/core/graphiti_core/
 
-# Copy MCP server application code
-COPY main.py ./
-COPY src/ ./src/
-COPY config/ ./config/
+# Install fork graphiti-core over the PyPI one (no deps — already installed)
+RUN set -eu; \
+    VENV_PYTHON="/app/mcp/.venv/bin/python"; \
+    if [ "$SOCKET_FIREWALL_ENABLED" = "true" ]; then \
+      export SOCKET_API_KEY="$(cat /run/secrets/socket_api_key)"; \
+      uv pip install --no-deps --reinstall --python "$VENV_PYTHON" /app/core; \
+    else \
+      uv pip install --no-deps --reinstall --python "$VENV_PYTHON" /app/core; \
+    fi
 
-# Copy FalkorDB combined config (uses localhost since both services in same container)
-COPY config/config-docker-falkordb-combined.yaml /app/mcp/config/config.yaml
+# ── Layer C: Copy MCP server application code ────────────────────────────────
+COPY mcp_server/main.py ./
+COPY mcp_server/src/ ./src/
+COPY mcp_server/config/ ./config/
 
-# Create log and data directories
-RUN mkdir -p /var/log/graphiti /var/lib/falkordb/data
+# ── Layer D: Record version ─────────────────────────────────────────────────
+# Write fork version (from the core pyproject.toml) to the image metadata file.
+RUN set -eu; \
+    FORK_VERSION=$(grep -m1 '^version' /app/core/pyproject.toml | cut -d'"' -f2); \
+    echo "fork-${FORK_VERSION}" > /app/mcp/.graphiti-core-version
 
-# Create startup script that runs both services
-RUN cat > /start-services.sh <<'EOF'
-#!/bin/bash
-set -e
-
-# Start FalkorDB in background using the correct module path
-echo "Starting FalkorDB..."
-redis-server \
-  --loadmodule /var/lib/falkordb/bin/falkordb.so \
-  --protected-mode no \
-  --bind 0.0.0.0 \
-  --port 6379 \
-  --dir /var/lib/falkordb/data \
-  --daemonize yes
-
-# Wait for FalkorDB to be ready
-echo "Waiting for FalkorDB to be ready..."
-until redis-cli -h localhost -p 6379 ping > /dev/null 2>&1; do
-  echo "FalkorDB not ready yet, waiting..."
-  sleep 1
-done
-echo "FalkorDB is ready!"
-
-# Start FalkorDB Browser if enabled (default: enabled)
-if [ "${BROWSER:-1}" = "1" ]; then
-  if [ -d "/var/lib/falkordb/browser" ] && [ -f "/var/lib/falkordb/browser/server.js" ]; then
-    echo "Starting FalkorDB Browser on port 3000..."
-    cd /var/lib/falkordb/browser
-    HOSTNAME="0.0.0.0" node server.js > /var/log/graphiti/browser.log 2>&1 &
-    echo "FalkorDB Browser started in background"
-  else
-    echo "Warning: FalkorDB Browser files not found, skipping browser startup"
-  fi
-else
-  echo "FalkorDB Browser disabled (BROWSER=${BROWSER})"
-fi
-
-# Start MCP server in foreground
-echo "Starting MCP server..."
-cd /app/mcp
-exec /root/.local/bin/uv run --no-sync main.py
-EOF
-
-RUN chmod +x /start-services.sh
+# Create log directory
+RUN mkdir -p /var/log/graphiti
 
 # Add Docker labels with version information
-ARG MCP_SERVER_VERSION=1.0.2
+ARG MCP_SERVER_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
-LABEL org.opencontainers.image.title="FalkorDB + Graphiti MCP Server" \
-      org.opencontainers.image.description="Combined FalkorDB graph database with Graphiti MCP server" \
+LABEL org.opencontainers.image.title="Graphiti MCP Server (Fork-Core)" \
+      org.opencontainers.image.description="Graphiti MCP server built on the fork's graphiti-core" \
       org.opencontainers.image.version="${MCP_SERVER_VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
@@ -153,14 +122,12 @@ LABEL org.opencontainers.image.title="FalkorDB + Graphiti MCP Server" \
       org.opencontainers.image.source="https://github.com/zep-ai/graphiti" \
       graphiti.core.version="${GRAPHITI_CORE_VERSION}"
 
-# Expose ports
-EXPOSE 6379 3000 8000
+# Expose MCP server port
+EXPOSE 8000
 
-# Health check - verify FalkorDB is responding
-# MCP server startup is logged and visible in container output
+# Health check - verify MCP server is responding
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
-    CMD redis-cli -p 6379 ping > /dev/null || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
-# Override the FalkorDB entrypoint and use our startup script
-ENTRYPOINT ["/start-services.sh"]
-CMD []
+# Run the MCP server (no re-sync; deps are baked in)
+CMD ["uv", "run", "--no-sync", "main.py"]

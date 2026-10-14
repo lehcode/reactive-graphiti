@@ -144,9 +144,9 @@ docker-compose -f docker-compose-neo4j.yml up
 - Page cache is set to 512MB
 - Enterprise features like parallel runtime require a license
 
-### Fork-Core Image (Dockerfile.fork)
+### Fork-Core Image (Dockerfile)
 
-**File:** `Dockerfile.fork`
+**File:** `Dockerfile`
 
 This image builds on the **fork's graphiti-core** instead of the PyPI release.
 Use it when your MCP server needs changes from the fork that haven't been published to PyPI yet.
@@ -160,7 +160,7 @@ Use it when your MCP server needs changes from the fork that haven't been publis
 #### Build command
 
 ```bash
-docker build -f mcp_server/docker/Dockerfile.fork .
+docker build -f mcp_server/docker/Dockerfile .
 ```
 
 The build context is the repository root (not `mcp_server/`).
@@ -177,9 +177,9 @@ The fork image supports these additional variables that bound prompt context:
 
 #### Notes
 
-- The image uses the same `CMD` as standalone: `uv run --no-sync main.py`
+- The image runs `uv run --no-sync main.py`
 - Docker Compose overrides the CMD with `uv run --no-sync python main.py`
-- See `Dockerfile.fork.dockerignore` (applies only to this Dockerfile)
+- See `Dockerfile.dockerignore` (applies only to this Dockerfile)
 
 ## Switching Between Databases
 
