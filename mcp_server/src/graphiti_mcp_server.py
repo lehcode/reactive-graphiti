@@ -120,6 +120,9 @@ logging.getLogger('neo4j.notifications').setLevel(
 logging.getLogger('mcp.server.streamable_http_manager').setLevel(
     logging.WARNING
 )  # Reduce MCP noise
+logging.getLogger('mcp.server.streamable_http').setLevel(
+    logging.WARNING
+)  # Stateless mode logs 'Terminating session: None' after every request
 
 
 # Patch uvicorn's logging config to use our format
@@ -223,6 +226,7 @@ class GraphitiService:
         self.config = config
         self.semaphore_limit = semaphore_limit
         self.semaphore = asyncio.Semaphore(semaphore_limit)
+        self._bge_reranker_active: bool = False
         self.client: Graphiti | None = None
         self.entity_types: dict[str, type[BaseModel]] | None = None
         self.edge_types: dict[str, type[BaseModel]] | None = None
@@ -250,7 +254,9 @@ class GraphitiService:
             # Create cross-encoder (reranker) client. Without this, Graphiti defaults to
             # OpenAIRerankerClient, which needs an OpenAI API key even on non-OpenAI setups.
             # Reranker setup errors must remain fatal rather than silently restoring that default.
-            cross_encoder_client = CrossEncoderFactory.create(self.config.llm, self.config.embedder)
+            cross_encoder_client = CrossEncoderFactory.create(
+                self.config.llm, self.config.embedder, self.config.cross_encoder
+            )
 
             # Get database configuration
             db_config = DatabaseDriverFactory.create_config(self.config.database)
@@ -348,6 +354,10 @@ class GraphitiService:
             # Build indices
             await self.client.build_indices_and_constraints()
 
+            self._bge_reranker_active = (
+                self.config.cross_encoder.enabled
+                and self.config.cross_encoder.provider.lower() == 'bge'
+            )
             logger.info('Successfully initialized Graphiti client')
 
             # Log configuration details
@@ -364,14 +374,11 @@ class GraphitiService:
                 logger.info('No Embedder client configured - search will be limited')
 
             if cross_encoder_client:
-                model_info = (
-                    f' / {self.config.cross_encoder.model}'
-                    if self.config.cross_encoder.model
-                    else ''
-                )
-                logger.info(
-                    f'Using Cross-Encoder provider: {self.config.cross_encoder.provider}{model_info}'
-                )
+                logger.info(f'Cross-Encoder: {type(cross_encoder_client).__name__}')
+                model_name = getattr(cross_encoder_client, 'model_name', 'N/A')
+                model = getattr(cross_encoder_client, 'model', None)
+                model_device = getattr(model, 'device', 'N/A') if model else 'N/A'
+                logger.info('  model=%s, device=%s', model_name, model_device)
             else:
                 logger.info('No Cross-Encoder client configured - using fallback ranking')
 
@@ -587,15 +594,19 @@ async def search_nodes(
 
         # center_node_uuid is only honored by the node_distance reranker, so select
         # that recipe when a center node is given (mirroring core's Graphiti.search);
-        # otherwise use RRF.
+        # otherwise use the cross-encoder recipe when bge is active, or RRF otherwise.
         from graphiti_core.search.search_config_recipes import (
+            NODE_HYBRID_SEARCH_CROSS_ENCODER,
             NODE_HYBRID_SEARCH_NODE_DISTANCE,
             NODE_HYBRID_SEARCH_RRF,
         )
 
-        node_config = (
-            NODE_HYBRID_SEARCH_NODE_DISTANCE if center_node_uuid else NODE_HYBRID_SEARCH_RRF
-        )
+        if center_node_uuid:
+            node_config = NODE_HYBRID_SEARCH_NODE_DISTANCE
+        elif graphiti_service._bge_reranker_active:
+            node_config = NODE_HYBRID_SEARCH_CROSS_ENCODER
+        else:
+            node_config = NODE_HYBRID_SEARCH_RRF
         results = await client.search_(
             query=query,
             config=node_config,
@@ -683,13 +694,31 @@ async def search_memory_facts(
             else []
         )
 
-        relevant_edges = await client.search(
-            group_ids=effective_group_ids,
-            query=query,
-            num_results=max_facts,
-            center_node_uuid=center_node_uuid,
-            search_filter=search_filter,
-        )
+        # When bge cross-encoder is active and no center node is given, use the
+        # cross-encoder recipe via search_() instead of the legacy search().
+        if graphiti_service._bge_reranker_active and center_node_uuid is None:
+            from graphiti_core.search.search_config_recipes import (
+                EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+            )
+
+            search_config = EDGE_HYBRID_SEARCH_CROSS_ENCODER.model_copy(deep=True)
+            search_config.limit = max_facts
+            results = await client.search_(
+                query=query,
+                config=search_config,
+                group_ids=effective_group_ids,
+                center_node_uuid=center_node_uuid,
+                search_filter=search_filter,
+            )
+            relevant_edges = results.edges
+        else:
+            relevant_edges = await client.search(
+                group_ids=effective_group_ids,
+                query=query,
+                num_results=max_facts,
+                center_node_uuid=center_node_uuid,
+                search_filter=search_filter,
+            )
 
         if not relevant_edges:
             return FactSearchResponse(message='No relevant facts found', facts=[])

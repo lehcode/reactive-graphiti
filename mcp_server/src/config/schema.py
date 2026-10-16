@@ -217,6 +217,10 @@ class CrossEncoderConfig(BaseModel):
         default=None,
         description='Model name (if None, uses provider default)',
     )
+    device: str | None = Field(
+        default=None,
+        description='Torch device for local models (e.g. "cuda", "cuda:0", "cpu"); None = auto',
+    )
     providers: CrossEncoderProvidersConfig = Field(default_factory=CrossEncoderProvidersConfig)
 
 

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from graphiti_core.cross_encoder import CrossEncoderClient
 
 from config.schema import (
+    CrossEncoderConfig,
     DatabaseConfig,
     EmbedderConfig,
     LLMConfig,
@@ -581,11 +582,50 @@ class CrossEncoderFactory:
     """
 
     @staticmethod
-    def create(llm_config: LLMConfig, embedder_config: EmbedderConfig) -> CrossEncoderClient:
-        """Create a cross-encoder client based on the configured providers."""
+    def create(
+        llm_config: LLMConfig,
+        embedder_config: EmbedderConfig,
+        cross_encoder_config: CrossEncoderConfig | None = None,
+    ) -> CrossEncoderClient:
+        """Create a cross-encoder client based on the configured providers.
+
+        When ``cross_encoder_config`` is provided with ``provider == 'bge'`` and
+        ``enabled is True``, returns a :class:`~graphiti_core.cross_encoder.bge_reranker_client.BGERerankerClient`.
+        Otherwise, falls back to the existing provider-based logic.
+        """
         import logging
 
         logger = logging.getLogger(__name__)
+
+        # Honour explicit cross_encoder config (mcp-gpu-reranker feature).
+        if (
+            cross_encoder_config is not None
+            and cross_encoder_config.enabled
+            and cross_encoder_config.provider.lower() == 'bge'
+        ):
+            try:
+                from graphiti_core.cross_encoder.bge_reranker_client import (
+                    BGERerankerClient,
+                )
+            except ImportError as e:
+                raise ValueError(
+                    'Cross-encoder provider "bge" requires the optional '
+                    'sentence-transformers dependency. '
+                    "Install the MCP server's 'providers' extra "
+                    "(uv sync --extra providers), install graphiti-core's "
+                    "'sentence-transformers' extra "
+                    "(pip install 'graphiti-core[sentence-transformers]'), or "
+                    'configure a different cross-encoder provider.'
+                ) from e
+
+            model_name = cross_encoder_config.model or 'BAAI/bge-reranker-v2-m3'
+            device = cross_encoder_config.device
+            logger.info(f'Cross-encoder: BGERerankerClient model={model_name}, device={device}')
+            # model_name/device exist only in the fork core; the upstream wheel takes no args.
+            return BGERerankerClient(
+                model_name=model_name,  # type: ignore[call-arg]
+                device=device,  # type: ignore[call-arg]
+            )
 
         # Try the LLM provider first, then the embedder, before falling back to a local model.
         for source, config in (('LLM', llm_config), ('embedder', embedder_config)):
