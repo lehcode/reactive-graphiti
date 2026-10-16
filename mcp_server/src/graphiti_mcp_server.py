@@ -120,6 +120,9 @@ logging.getLogger('neo4j.notifications').setLevel(
 logging.getLogger('mcp.server.streamable_http_manager').setLevel(
     logging.WARNING
 )  # Reduce MCP noise
+logging.getLogger('mcp.server.streamable_http').setLevel(
+    logging.WARNING
+)  # Stateless mode logs 'Terminating session: None' after every request
 
 
 # Patch uvicorn's logging config to use our format
