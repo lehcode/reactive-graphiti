@@ -64,6 +64,17 @@ except (ValueError, TypeError):
     )
     INPUT_TOKEN_SAFETY_RATIO = 0.8
 
+# What LiteLLMClient does when a rendered prompt exceeds the input budget:
+# 'warn' logs and still sends; 'raise' refuses with PromptBudgetExceededError.
+# Invalid values default to 'warn' with a warning.
+LLM_INPUT_BUDGET_MODE = os.getenv('LLM_INPUT_BUDGET_MODE', 'warn').strip().lower()
+if LLM_INPUT_BUDGET_MODE not in ('warn', 'raise'):
+    logging.getLogger('graphiti_core').warning(
+        f'Invalid LLM_INPUT_BUDGET_MODE={os.getenv("LLM_INPUT_BUDGET_MODE")} '
+        "(must be 'warn' or 'raise'); defaulting to 'warn'"
+    )
+    LLM_INPUT_BUDGET_MODE = 'warn'
+
 # Episode content budget ratio for oversized-episode splitting.
 # Applied to max_input_tokens to produce the threshold above which an episode
 # body is auto-chunked and processed as a saga.

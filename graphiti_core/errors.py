@@ -94,3 +94,24 @@ class NodeLabelValidationError(GraphitiError, ValueError):
             f'alphanumeric characters or underscores: {label_list}'
         )
         super().__init__(self.message)
+
+
+class PromptBudgetExceededError(GraphitiError):
+    """Raised before sending a chat call whose rendered prompt exceeds the input budget."""
+
+    def __init__(
+        self,
+        prompt_name: str,
+        estimate: dict[str, int],
+        budget: int,
+        max_input_tokens: int | None,
+    ):
+        self.prompt_name = prompt_name
+        self.estimate = estimate
+        self.budget = budget
+        self.max_input_tokens = max_input_tokens
+        self.message = (
+            f'prompt {prompt_name} renders ~{estimate["rendered"]} tokens, over the input '
+            f'budget {budget} (max_input_tokens={max_input_tokens}); estimate={estimate}'
+        )
+        super().__init__(self.message)
