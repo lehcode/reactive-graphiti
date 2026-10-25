@@ -346,3 +346,61 @@ class TestLiteLLMClientTokenLogging:
         assert usage['prompt_a'].total_output_tokens == 55
         assert usage['prompt_b'].total_input_tokens == 222
         assert usage['prompt_b'].total_output_tokens == 66
+
+
+def _ok_response():
+    choice = MagicMock()
+    choice.message.content = json.dumps({'ok': True})
+    response = MagicMock()
+    response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+    response.choices = [choice]
+    return response
+
+
+def _make_client(config: LLMConfig | None = None, **kwargs) -> LiteLLMClient:
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=_ok_response())
+    return LiteLLMClient(
+        config=config or LLMConfig(api_key='test-key'), client=mock_client, **kwargs
+    )
+
+
+class TestMaxTokensCap:
+    """The configured max_tokens caps the output tokens of every call."""
+
+    @staticmethod
+    async def _sent_max_tokens(client: LiteLLMClient, requested: int | None) -> tuple[int, int]:
+        span = MagicMock()
+        client.tracer = MagicMock()
+        client.tracer.start_span.return_value.__enter__.return_value = span
+        await client.generate_response([Message(role='user', content='Hi')], max_tokens=requested)
+        sent = client.client.chat.completions.create.call_args.kwargs['max_tokens']
+        return sent, span.add_attributes.call_args.args[0]['max_tokens']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'requested,expected', [(16384, 2048), (None, 2048), (1, 1), (2048, 2048)]
+    )
+    async def test_request_is_clamped_to_configured(self, requested, expected):
+        client = _make_client(LLMConfig(api_key='test-key', max_tokens=2048))
+        assert await self._sent_max_tokens(client, requested) == (expected, expected)
+
+    @pytest.mark.asyncio
+    async def test_clamp_logs_only_when_reduced(self, caplog):
+        client = _make_client(LLMConfig(api_key='test-key', max_tokens=2048))
+        with caplog.at_level(logging.DEBUG, logger='graphiti_core.llm_client.litellm_client'):
+            await self._sent_max_tokens(client, 2048)
+            assert 'Clamping max_tokens' not in caplog.text
+            await self._sent_max_tokens(client, 16384)
+        assert 'requested=16384 effective=2048' in caplog.text
+
+    def test_constructor_honors_config_max_tokens(self):
+        assert _make_client(LLMConfig(api_key='k', max_tokens=2048)).max_tokens == 2048
+
+    def test_no_config_keeps_default(self):
+        with patch('graphiti_core.llm_client.litellm_client.AsyncOpenAI'):
+            assert LiteLLMClient().max_tokens == 16384
+
+    def test_explicit_constructor_argument_wins(self):
+        client = _make_client(LLMConfig(api_key='k', max_tokens=2048), max_tokens=512)
+        assert client.max_tokens == 512

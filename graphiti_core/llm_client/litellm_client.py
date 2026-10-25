@@ -69,7 +69,7 @@ class LiteLLMClient(LLMClient):
         config: LLMConfig | None = None,
         cache: bool = False,
         client: typing.Any = None,
-        max_tokens: int = 16384,
+        max_tokens: int | None = None,
         structured_output_mode: StructuredOutputMode = 'json_schema',
     ):
         """
@@ -79,7 +79,7 @@ class LiteLLMClient(LLMClient):
             config (LLMConfig | None): The configuration for the LLM client, including API key, model, base URL, temperature, and max tokens.
             cache (bool): Whether to use caching for responses. Defaults to False.
             client (Any | None): An optional async client instance to use. If not provided, a new AsyncOpenAI client is created.
-            max_tokens (int): The maximum number of tokens to generate. Defaults to 16384 (16K) for better compatibility with local models.
+            max_tokens (int | None): The maximum number of tokens to generate. Defaults to ``config.max_tokens`` (16384 when the config sets none).
             structured_output_mode (StructuredOutputMode): Whether to request structured
                 output via native ``json_schema`` (the default, uses constrained decoding)
                 or to fall back to ``json_object``. Set to ``'json_object'`` for providers
@@ -97,8 +97,9 @@ class LiteLLMClient(LLMClient):
 
         super().__init__(config, cache)
 
-        # Override max_tokens to support higher limits for local models
-        self.max_tokens = max_tokens
+        # super().__init__ already took config.max_tokens; an explicit argument overrides it
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
         self.structured_output_mode: StructuredOutputMode = structured_output_mode
 
         if client is None:
@@ -305,8 +306,15 @@ class LiteLLMClient(LLMClient):
         model: str | None = None,
     ) -> dict[str, typing.Any]:
         self._apply_attribute_extraction_preamble(messages, attribute_extraction)
-        if max_tokens is None:
-            max_tokens = self.max_tokens
+        # Never request more output tokens than the configured cap (callers such as edge
+        # extraction hard-code 16384)
+        effective_max_tokens = min(max_tokens or self.max_tokens, self.max_tokens)
+        if max_tokens is not None and max_tokens > effective_max_tokens:
+            logger.debug(
+                f'Clamping max_tokens: prompt={prompt_name or "unknown"} '
+                f'requested={max_tokens} effective={effective_max_tokens}'
+            )
+        max_tokens = effective_max_tokens
 
         # In json_object fallback mode the API does not enforce the schema, so embed it in
         # the prompt to guide the model. In json_schema mode the schema is enforced via
