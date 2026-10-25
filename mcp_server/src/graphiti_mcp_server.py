@@ -25,6 +25,11 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
+try:
+    from graphiti_core.utils.episode_splitting import episode_size_warning
+except ImportError:  # upstream graphiti-core wheel: no fork budget helper, skip the size check
+    episode_size_warning = None  # type: ignore[assignment]
+
 from config.schema import GraphitiConfig, ServerConfig
 from models.response_types import (
     BuildCommunitiesResponse,
@@ -519,6 +524,18 @@ async def add_memory(
                 logger.warning(f"Unknown source type '{source}', using 'text' as default")
                 episode_type = EpisodeType.text
 
+        size_warning = None
+        if episode_size_warning is not None:
+            try:
+                size_warning = episode_size_warning(
+                    getattr(graphiti_service.client, 'llm_client', None),
+                    episode_body,
+                    episode_type,
+                    uuid or None,
+                )
+            except Exception as e:  # advisory only: never block queueing
+                logger.warning(f'Episode size check failed: {e}')
+
         # Submit to queue service for async processing
         await queue_service.add_episode(
             group_id=effective_group_id,
@@ -539,8 +556,9 @@ async def add_memory(
             saga_previous_episode_uuid=saga_previous_episode_uuid,
         )
 
+        message = f"Episode '{name}' queued for processing in group '{effective_group_id}'"
         return SuccessResponse(
-            message=f"Episode '{name}' queued for processing in group '{effective_group_id}'"
+            message=f'{message}. WARNING: {size_warning}' if size_warning else message
         )
     except Exception as e:
         error_msg = str(e)
