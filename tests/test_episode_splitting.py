@@ -304,3 +304,42 @@ def test_episode_content_budget_ratio_env_parsing(value, expected):
         timeout=60,
     )
     assert float(out.stdout.strip()) == expected
+
+
+def _client(budget):
+    client = MagicMock()
+    client.input_token_budget.return_value = budget
+    return client
+
+
+# BUDGET=1000 -> safe size 400 tokens (~1600 chars).
+BIG_VALUE = 'x' * 8000
+
+
+@pytest.mark.parametrize(
+    'client, body, uuid',
+    [
+        (_client(None), BIG_VALUE, None),
+        (None, BIG_VALUE, None),
+        (_client(BUDGET), BIG_VALUE, 'existing-uuid'),
+        (_client(BUDGET), SHORT_TEXT, None),
+        (_client(BUDGET), 'x' * 1600, None),  # exactly the safe size
+        (_client(BUDGET), '', None),
+        (_client(BUDGET), LONG_TEXT, None),  # splittable text is auto-split
+    ],
+)
+def test_episode_size_warning_none(client, body, uuid):
+    assert episode_splitting.episode_size_warning(client, body, EpisodeType.text, uuid) is None
+
+
+def test_episode_size_warning_json_oversized_value():
+    body = json.dumps({'k': BIG_VALUE})
+    msg = episode_splitting.episode_size_warning(_client(BUDGET), body, EpisodeType.json)
+    assert msg and 'queued' in msg and 'safe size 400 tokens' in msg and '1600 characters' in msg
+    assert str(len(body) // 4) in msg
+
+
+def test_episode_size_warning_oversized_speaker_message():
+    body = f'Alice: {BIG_VALUE}\nBob: hi'
+    msg = episode_splitting.episode_size_warning(_client(BUDGET), body, EpisodeType.message)
+    assert msg and 'queued' in msg

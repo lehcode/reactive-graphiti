@@ -22,6 +22,7 @@ from graphiti_core.edges import CommunityEdge, EntityEdge, EpisodicEdge
 from graphiti_core.helpers import EPISODE_CONTENT_BUDGET_RATIO
 from graphiti_core.nodes import CommunityNode, EntityNode, EpisodeType, SagaNode
 from graphiti_core.utils.content_chunking import (
+    CHARS_PER_TOKEN,
     CHUNK_OVERLAP_TOKENS,
     chunk_json_content,
     chunk_message_content,
@@ -48,6 +49,33 @@ def chunk_episode_body(episode_body: str, source: EpisodeType, chunk_size: int) 
         chunker = chunk_text_content
 
     return chunker(episode_body, chunk_size, overlap)
+
+
+def episode_size_warning(
+    llm_client: Any, episode_body: str, source: EpisodeType, uuid: str | None = None
+) -> str | None:
+    """Advice for a body the auto-split in ``Graphiti.add_episode`` cannot bring under the safe size.
+
+    Mirrors the split rule: no budget or an existing ``uuid`` -> None; a body within the
+    content share -> None; otherwise warn only if the largest chunker part is still too big.
+    """
+    budget = llm_client.input_token_budget() if llm_client is not None else None
+    if not isinstance(budget, int) or uuid is not None or not episode_body:
+        return None
+    safe = max(1, int(EPISODE_CONTENT_BUDGET_RATIO * budget))
+    body_tokens = estimate_tokens(episode_body)
+    if body_tokens <= safe:
+        return None
+    largest = max(estimate_tokens(p) for p in chunk_episode_body(episode_body, source, safe))
+    if largest <= safe:
+        return None
+    return (
+        f'content is about {body_tokens} tokens and cannot be split below the safe size '
+        f'(largest part about {largest} tokens, safe size {safe} tokens or about '
+        f'{safe * CHARS_PER_TOKEN} characters). It was queued, but extraction may fail. '
+        'Split it at natural boundaries (paragraphs, messages, JSON elements) into several '
+        'add_memory calls, each under the safe size, or shorten it.'
+    )
 
 
 def aggregate_part_results(results: 'list[AddEpisodeResults]') -> 'AddEpisodeResults':
