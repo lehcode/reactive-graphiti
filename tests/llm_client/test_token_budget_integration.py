@@ -1,11 +1,14 @@
 """Tests for input-token budget integration (LLMConfig, LiteLLMClient)."""
 
+import importlib
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from graphiti_core import helpers
+from graphiti_core.errors import GraphitiError, PromptBudgetExceededError
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.litellm_client import LiteLLMClient
 from graphiti_core.prompts.models import Message
@@ -178,3 +181,42 @@ class TestParseFailureStillRecordsUsage:
         # decorator; check that it was recorded at least once)
         usage = client.token_tracker.get_usage()
         assert 'parse_fail_prompt' in usage
+
+
+class TestInputBudgetModeSetting:
+    """LLM_INPUT_BUDGET_MODE parsing in helpers."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_helpers(self, monkeypatch):
+        yield
+        monkeypatch.delenv('LLM_INPUT_BUDGET_MODE', raising=False)
+        importlib.reload(helpers)
+
+    @pytest.mark.parametrize('raw,expected', [(None, 'warn'), (' RAISE ', 'raise')])
+    def test_valid_values(self, monkeypatch, raw, expected):
+        if raw is None:
+            monkeypatch.delenv('LLM_INPUT_BUDGET_MODE', raising=False)
+        else:
+            monkeypatch.setenv('LLM_INPUT_BUDGET_MODE', raw)
+        importlib.reload(helpers)
+        assert expected == helpers.LLM_INPUT_BUDGET_MODE
+
+    def test_invalid_value_warns_and_defaults(self, monkeypatch, caplog):
+        monkeypatch.setenv('LLM_INPUT_BUDGET_MODE', 'bogus')
+        with caplog.at_level(logging.WARNING, logger='graphiti_core'):
+            importlib.reload(helpers)
+        assert helpers.LLM_INPUT_BUDGET_MODE == 'warn'
+        assert 'Invalid LLM_INPUT_BUDGET_MODE=bogus' in caplog.text
+
+
+def test_prompt_budget_exceeded_error_carries_fields():
+    estimate = {'system': 1, 'user': 2, 'schema': 3, 'total': 6, 'rendered': 6}
+    err = PromptBudgetExceededError('p', estimate, 5, 10)
+    assert isinstance(err, GraphitiError)
+    assert (err.prompt_name, err.estimate, err.budget, err.max_input_tokens) == (
+        'p',
+        estimate,
+        5,
+        10,
+    )
+    assert 'p' in err.message and '5' in err.message
