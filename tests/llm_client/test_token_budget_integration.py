@@ -220,3 +220,75 @@ def test_prompt_budget_exceeded_error_carries_fields():
         10,
     )
     assert 'p' in err.message and '5' in err.message
+
+
+class TestInputBudgetGuard:
+    """warn / raise guard on the caller-rendered prompt size (budget = 800 tokens)."""
+
+    @pytest.fixture
+    def client(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
+        choice = MagicMock()
+        choice.message.content = json.dumps({'ok': True})
+        mock_client.chat.completions.create.return_value = MagicMock(
+            usage=MagicMock(prompt_tokens=1, completion_tokens=1), choices=[choice]
+        )
+        config = LLMConfig(api_key='test-key', max_input_tokens=1000)
+        return LiteLLMClient(config=config, client=mock_client)
+
+    @staticmethod
+    def _messages(system_chars: int) -> list[Message]:
+        return [
+            Message(role='system', content='x' * system_chars),
+            Message(role='user', content='abcd'),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_warn_logs_all_fields_once_and_sends(self, client, monkeypatch, caplog):
+        monkeypatch.setattr('graphiti_core.helpers.LLM_INPUT_BUDGET_MODE', 'warn')
+        with caplog.at_level(logging.WARNING, logger='graphiti_core.llm_client.litellm_client'):
+            await client.generate_response(self._messages(3600), prompt_name='guard_test')
+        lines = [r.message for r in caplog.records if 'over input budget' in r.message]
+        assert len(lines) == 1
+        for field in (
+            'prompt=guard_test',
+            'est_rendered=901',
+            'est_total=',
+            'est_system=',
+            'est_user=',
+            'est_schema=',
+            'budget=800',
+            'max_input_tokens=1000',
+        ):
+            assert field in lines[0]
+        client.client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raise_refuses_without_sending(self, client, monkeypatch):
+        monkeypatch.setattr('graphiti_core.helpers.LLM_INPUT_BUDGET_MODE', 'raise')
+        with pytest.raises(PromptBudgetExceededError) as exc:
+            await client.generate_response(self._messages(3600), prompt_name='guard_test')
+        assert exc.value.prompt_name == 'guard_test'
+        assert exc.value.estimate['rendered'] == 901
+        assert (exc.value.budget, exc.value.max_input_tokens) == (800, 1000)
+        client.client.chat.completions.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_raise_without_budget_sends(self, client, monkeypatch):
+        monkeypatch.setattr('graphiti_core.helpers.LLM_INPUT_BUDGET_MODE', 'raise')
+        client.config.max_input_tokens = None
+        await client.generate_response(self._messages(3600))
+        client.client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('mode', ['warn', 'raise'])
+    async def test_exactly_at_budget_passes_despite_appended_text(
+        self, client, monkeypatch, caplog, mode
+    ):
+        """799 + 1 = 800 rendered tokens; the appended language instruction is not counted."""
+        monkeypatch.setattr('graphiti_core.helpers.LLM_INPUT_BUDGET_MODE', mode)
+        with caplog.at_level(logging.WARNING):
+            await client.generate_response(self._messages(3196))
+        assert 'over input budget' not in caplog.text
+        client.client.chat.completions.create.assert_awaited_once()

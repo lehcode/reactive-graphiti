@@ -27,6 +27,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel
 
+from ..errors import PromptBudgetExceededError
 from ..prompts.models import Message
 from ..utils.content_chunking import estimate_tokens
 from .client import LLMClient, get_extraction_language_instruction
@@ -305,6 +306,11 @@ class LiteLLMClient(LLMClient):
         attribute_extraction: bool = False,
         model: str | None = None,
     ) -> dict[str, typing.Any]:
+        # What graphiti's budget helpers sized the prompt to: caller messages + schema, before
+        # the client appends the preamble / language instruction / json_object schema.
+        rendered_tokens = sum(estimate_tokens(m.content) for m in messages)
+        if response_model is not None:
+            rendered_tokens += estimate_tokens(json.dumps(response_model.model_json_schema()))
         self._apply_attribute_extraction_preamble(messages, attribute_extraction)
         # Never request more output tokens than the configured cap (callers such as edge
         # extraction hard-code 16384)
@@ -356,17 +362,25 @@ class LiteLLMClient(LLMClient):
                 'user': user_tokens,
                 'schema': schema_tokens,
                 'total': system_tokens + user_tokens + schema_tokens,
+                'rendered': rendered_tokens,
             }
 
-            # Check budget before sending (log WARNING but still send; LiteLLM
-            # rejects authoritatively)
+            # Guard on the caller-rendered size, not the as-sent total, so a prompt packed to
+            # exactly the budget is not refused for text appended here. 'warn' still sends
+            # (LiteLLM rejects authoritatively); 'raise' refuses before the retry wrapper.
             budget = self.input_token_budget()
-            if budget is not None and estimate['total'] > budget:
+            if budget is not None and estimate['rendered'] > budget:
+                from ..helpers import LLM_INPUT_BUDGET_MODE
+
+                max_input_tokens = self.config.max_input_tokens if self.config else None
+                if LLM_INPUT_BUDGET_MODE == 'raise':
+                    raise PromptBudgetExceededError(prompt_name, estimate, budget, max_input_tokens)
                 logger.warning(
                     f'LLM prompt over input budget: prompt={prompt_name} '
-                    f'model={model_name} est_total={estimate["total"]} '
-                    f'budget={budget} max_input_tokens='
-                    f'{self.config.max_input_tokens if self.config else None}'
+                    f'model={model_name} est_rendered={estimate["rendered"]} '
+                    f'est_total={estimate["total"]} est_system={estimate["system"]} '
+                    f'est_user={estimate["user"]} est_schema={estimate["schema"]} '
+                    f'budget={budget} max_input_tokens={max_input_tokens}'
                 )
 
             # Make context available to _generate_response (persists through retries)
