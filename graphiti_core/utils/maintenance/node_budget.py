@@ -43,6 +43,27 @@ def _messages_cost(messages: list[Message]) -> int:
     return sum(estimate_tokens(m.content if hasattr(m, 'content') else str(m)) for m in messages)
 
 
+def _warn_fixed_overflow(label: str, fixed_cost: int, budget: int, context: dict[str, Any]) -> None:
+    """Log one WARNING naming the component that makes the fixed prompt cost exceed the budget."""
+    components = {
+        k: estimate_tokens(
+            v if isinstance(v, str) else json.dumps(v, default=str, ensure_ascii=False)
+        )
+        for k, v in context.items()
+    }
+    components['prompt template + schema'] = max(fixed_cost - sum(components.values()), 0)
+    name, tokens = max(components.items(), key=lambda kv: kv[1])
+    logger.warning(
+        '%s: fixed prompt cost (%d tokens) exceeds the input-token budget %d; '
+        'largest component: %s (%d tokens)',
+        label,
+        fixed_cost,
+        budget,
+        name,
+        tokens,
+    )
+
+
 def extraction_prompt(source: EpisodeType) -> PromptFunction:
     """Prompt builder extract_nodes sends for an episode source (as in _call_extraction_llm)."""
     if source == EpisodeType.message:
@@ -87,15 +108,18 @@ def with_budgeted_previous_episodes(
     ``context`` must render the prompt without previous episodes. ``None`` previous
     episodes send none.
     """
-    budget_tokens: int | None = None
     episodes_context: list[dict[str, str | None]] = []
-    if previous_episodes is not None:
-        budget_tokens = remaining_budget_for_previous_episodes(
-            llm_client, prompt_builder, context, response_model=response_model
-        )
-        episodes_context = build_previous_episodes_context(previous_episodes, budget_tokens)
-
+    # Computed even without previous episodes so a fixed-overhead overflow is still reported.
+    budget_tokens = remaining_budget_for_previous_episodes(
+        llm_client, prompt_builder, context, response_model=response_model
+    )
     input_budget = llm_client.input_token_budget()
+    if budget_tokens == 0 and isinstance(input_budget, int):
+        fixed_cost = _messages_cost(prompt_builder({**context, 'previous_episodes': []}))
+        fixed_cost += estimate_tokens(json.dumps(response_model.model_json_schema()))
+        _warn_fixed_overflow(label, fixed_cost, input_budget, context)
+    if previous_episodes is not None:
+        episodes_context = build_previous_episodes_context(previous_episodes, budget_tokens)
     logger.debug(
         '%s: budget=%s fixed_estimate=%s episodes=%d/%d',
         label,
@@ -130,13 +154,7 @@ def pack_summary_flights(
     fixed_cost += estimate_tokens(json.dumps(SummarizedEntities.model_json_schema()))
     if fixed_cost >= budget:
         # No flight can fit; more flights would only resend the oversized episode
-        logger.warning(
-            'Summary prompt without entities (%d tokens) exceeds the input-token budget %d; '
-            'using flights of %d',
-            fixed_cost,
-            budget,
-            max_items,
-        )
+        _warn_fixed_overflow('summary flights', fixed_cost, budget, base_context)
         return [nodes[i : i + max_items] for i in range(0, len(nodes), max_items)]
 
     return pack_by_budget(
