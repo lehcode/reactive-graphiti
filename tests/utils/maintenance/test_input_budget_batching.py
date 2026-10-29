@@ -111,13 +111,13 @@ def _resolution(local_id: int, duplicate: int = -1) -> dict:
 
 @pytest.mark.asyncio
 async def test_dedupe_batches_are_renumbered_and_mapped_back(monkeypatch, flat_estimate):
-    # Room for 2 entities per call -> 2 calls; the model answers with per-call ids 0..1
+    # Room for 2 entities per call (each costs TOKENS_PER_STRING + 1) -> 2 calls; per-call ids 0..1
     responses = [
         {'entity_resolutions': [_resolution(0), _resolution(1)]},
         {'entity_resolutions': [_resolution(0), _resolution(1, duplicate=0)]},
     ]
     extracted, candidate, state, contexts, _ = await _run_dedupe(
-        monkeypatch, FIXED_COST + 2 * TOKENS_PER_STRING, responses
+        monkeypatch, FIXED_COST + 2 * (TOKENS_PER_STRING + 1), responses
     )
 
     # renders of the full node list are fixed-cost measurements, not sent batches
@@ -145,7 +145,7 @@ async def test_dedupe_out_of_range_batch_id_does_not_alias(monkeypatch, flat_est
     ]
     with caplog.at_level(logging.WARNING):
         extracted, _candidate, state, _, _ = await _run_dedupe(
-            monkeypatch, FIXED_COST + 2 * TOKENS_PER_STRING, responses
+            monkeypatch, FIXED_COST + 2 * (TOKENS_PER_STRING + 1), responses
         )
 
     assert [n.uuid for n in state.resolved_nodes] == [n.uuid for n in extracted]

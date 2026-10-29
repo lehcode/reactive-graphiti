@@ -186,7 +186,8 @@ def _dedupe_batches(llm_client: LLMClient, context: dict[str, Any]) -> list[list
     fixed_cost += estimate_tokens(json.dumps(NodeResolutions.model_json_schema()))
     batches = pack_by_budget(
         extracted_nodes_context,
-        cost=lambda entry: estimate_tokens(json.dumps(entry)),
+        # ', ' joins entries; +1: summing per-entry floors undercounts the joined JSON
+        cost=lambda entry: estimate_tokens(json.dumps(entry) + ', ') + 1,
         budget=input_budget,
         fixed_cost=fixed_cost,
     )
