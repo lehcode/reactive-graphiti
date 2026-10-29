@@ -958,6 +958,10 @@ async def summarize_saga(
     add_memory. This tool resolves that name to the saga within the group and
     summarizes it.
 
+    A large backlog is folded in several sequential LLM calls and can take minutes.
+    The summary is saved only after all of them succeed, so a call that times out
+    changes nothing.
+
     Args:
         saga_name: The saga name — the same value passed as ``saga`` to add_memory.
         group_id: Optional group ID the saga belongs to. Falls back to the default group.
