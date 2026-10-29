@@ -4,15 +4,18 @@ The module-level ``estimate_tokens`` is patched to a flat 10 tokens per string, 
 rendered as one message costs 10, the response schema 10 and every node/candidate entry 10.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from itertools import combinations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from graphiti_core.edges import EntityEdge
 from graphiti_core.nodes import EntityNode, EpisodeType, EpisodicNode
+from graphiti_core.prompts.models import Message
 from graphiti_core.utils.maintenance import (
     edge_budget,
     node_budget,
@@ -23,6 +26,7 @@ from graphiti_core.utils.maintenance.edge_operations import (
     extract_edges,
     resolve_extracted_edge,
 )
+from graphiti_core.utils.maintenance.node_budget import with_budgeted_previous_episodes
 from graphiti_core.utils.maintenance.node_operations import (
     _build_candidate_indexes,
     _resolve_with_llm,
@@ -116,7 +120,8 @@ async def test_dedupe_batches_are_renumbered_and_mapped_back(monkeypatch, flat_e
         monkeypatch, FIXED_COST + 2 * TOKENS_PER_STRING, responses
     )
 
-    sent = [ctx for ctx in contexts if ctx['extracted_nodes']]
+    # renders of the full node list are fixed-cost measurements, not sent batches
+    sent = [ctx for ctx in contexts if 0 < len(ctx['extracted_nodes']) < len(extracted)]
     assert [[e['id'] for e in ctx['extracted_nodes']] for ctx in sent] == [[0, 1], [0, 1]]
     assert [e['name'] for e in sent[1]['extracted_nodes']] == ['Entity 2', 'Entity 3']
     # Batch 2's local id 1 is global entity 3
@@ -493,3 +498,49 @@ async def test_summary_batch_passes_flight_inputs(monkeypatch):
         'prompt_builder': node_budget.summary_prompt(True)[1],
         'base_context': node_operations._summary_base_context(episode, entity_types),
     }
+
+
+class _Out(BaseModel):
+    x: int = 0
+
+
+def _overflow_builder(context):
+    return [
+        Message(
+            role='user',
+            content=context['episode_content'] + json.dumps(context['entity_types']),
+        )
+    ]
+
+
+def _budgeted(budget, previous, **ctx):
+    context = {'episode_content': 'c', 'entity_types': 'e', **ctx}
+    return with_budgeted_previous_episodes(
+        'test label', _llm_client(budget), _overflow_builder, context, previous, _Out
+    )
+
+
+@pytest.mark.parametrize(
+    'ctx, dominant',
+    [
+        ({'entity_types': 'T' * 8000}, 'entity_types'),
+        ({'episode_content': 'C' * 8000}, 'episode_content'),
+    ],
+)
+@pytest.mark.parametrize('previous', [[], None])
+def test_fixed_overflow_warns_with_dominant_component(caplog, ctx, dominant, previous):
+    with caplog.at_level(logging.WARNING):
+        result = _budgeted(1000, previous, **ctx)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert 'test label' in warnings[0] and f'largest component: {dominant} (' in warnings[0]
+    assert result['previous_episodes'] == []
+
+
+@pytest.mark.parametrize('budget', [100_000, None])
+def test_no_fixed_overflow_warning_under_budget_or_without_budget(caplog, budget):
+    with caplog.at_level(logging.WARNING):
+        _budgeted(budget, None, entity_types='T' * 8000)
+
+    assert not caplog.records
