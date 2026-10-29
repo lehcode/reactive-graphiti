@@ -122,3 +122,90 @@ async def test_empty_reply_keeps_running_summary():
 
 def test_saga_batches_without_budget_is_one_batch():
     assert saga_batches(_client(None), 'saga', '', ['a', 'b']) == [['a', 'b']]
+
+
+# --- Graphiti.summarize_saga integration: single save, all-or-nothing ---
+
+
+def _stub(monkeypatch, client, episodes, saga):
+    from graphiti_core.graphiti import Graphiti
+    from graphiti_core.nodes import SagaNode
+
+    save = AsyncMock()
+    monkeypatch.setattr(SagaNode, 'get_by_uuid', AsyncMock(return_value=saga))
+    monkeypatch.setattr(SagaNode, 'save', save)
+    stub = MagicMock()
+    stub.llm_client = client
+    stub.clients = None
+    stub._saga_get_episode_contents = AsyncMock(return_value=episodes)
+    return Graphiti.summarize_saga, stub, save
+
+
+def _saga():
+    from datetime import datetime, timezone
+
+    from graphiti_core.nodes import SagaNode
+
+    return SagaNode(
+        name='saga',
+        group_id='g',
+        summary='old',
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_summarize_saga_saves_once_after_all_batches(monkeypatch):
+    from datetime import datetime, timezone
+
+    valid_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    client = _client(BUDGET)
+    data = [(c, valid_at) for c in _episodes(20, 1200)]
+    fn, stub, save = _stub(monkeypatch, client, data, _saga())
+
+    saga = await fn(stub, 'uuid')
+
+    assert len(client.calls) > 1
+    save.assert_awaited_once()
+    assert saga.summary == f'summary-{len(client.calls)}'
+    assert saga.last_summarized_at is not None
+    assert saga.last_summarized_episode_valid_at == valid_at
+
+
+@pytest.mark.asyncio
+async def test_summarize_saga_batch_failure_changes_nothing(monkeypatch):
+    client = _client(BUDGET)
+    inner = client.generate_response.side_effect
+    state = {'n': 0}
+
+    async def flaky(messages, **kwargs):
+        state['n'] += 1
+        if state['n'] == 2:
+            raise RuntimeError('boom')
+        return await inner(messages, **kwargs)
+
+    client.generate_response = AsyncMock(side_effect=flaky)
+    from datetime import datetime, timezone
+
+    data = [(c, datetime(2026, 2, 1, tzinfo=timezone.utc)) for c in _episodes(20, 1200)]
+    saga = _saga()
+    fn, stub, save = _stub(monkeypatch, client, data, saga)
+
+    with pytest.raises(RuntimeError):
+        await fn(stub, 'uuid')
+
+    assert saga.summary == 'old'
+    assert saga.last_summarized_at is None
+    assert saga.last_summarized_episode_valid_at is None
+    save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_summarize_saga_empty_backlog_makes_no_call(monkeypatch):
+    client = _client(BUDGET)
+    fn, stub, save = _stub(monkeypatch, client, [], _saga())
+
+    await fn(stub, 'uuid')
+
+    client.generate_response.assert_not_awaited()
+    save.assert_not_awaited()

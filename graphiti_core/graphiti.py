@@ -40,7 +40,7 @@ from graphiti_core.edges import (
 )
 from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
 from graphiti_core.errors import EdgeNotFoundError, NodeNotFoundError
-from graphiti_core.graphiti_types import GraphitiClients, generate_prompt_response
+from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.helpers import (
     EPISODE_CONTENT_BUDGET_RATIO,
     PREVIOUS_EPISODE_LIMIT,
@@ -60,13 +60,11 @@ from graphiti_core.nodes import (
     SagaNode,
     create_entity_node_embeddings,
 )
-from graphiti_core.prompts import prompt_library
 from graphiti_core.prompts.lib import (
     ChatPromptLibrary,
     ensure_prompt_library_wrapped,
     validate_prompt_library,
 )
-from graphiti_core.prompts.summarize_sagas import SagaSummary
 from graphiti_core.search.search import SearchConfig, search
 from graphiti_core.search.search_config import DEFAULT_SEARCH_LIMIT, SearchResults
 from graphiti_core.search.search_config_recipes import (
@@ -114,8 +112,8 @@ from graphiti_core.utils.maintenance.node_operations import (
     extract_nodes,
     resolve_extracted_nodes,
 )
+from graphiti_core.utils.maintenance.saga_budget import summarize_saga_by_budget
 from graphiti_core.utils.ontology_utils.entity_types_utils import validate_entity_types
-from graphiti_core.utils.text_utils import MAX_SUMMARY_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -596,24 +594,13 @@ class Graphiti:
         episode_contents = [content for content, _ in episodes_data]
         valid_ats = [valid_at for _, valid_at in episodes_data if valid_at is not None]
 
-        context = {
-            'saga_name': saga.name,
-            'existing_summary': saga.summary or '',
-            'episodes': episode_contents,
-        }
-
-        llm_response = await generate_prompt_response(
+        summary = await summarize_saga_by_budget(
             self.llm_client,
-            'summarize_sagas.summarize_saga',
-            prompt_library.summarize_sagas.summarize_saga,
-            context,
+            saga.name,
+            saga.summary or '',
+            episode_contents,
             clients=self.clients,
-            response_model=SagaSummary,
         )
-
-        summary = llm_response.get('summary', '')
-        if len(summary) > MAX_SUMMARY_CHARS:
-            summary = summary[:MAX_SUMMARY_CHARS]
 
         saga.summary = summary
         # Wall-clock watermark for the next-run filter: keeps backfilled
