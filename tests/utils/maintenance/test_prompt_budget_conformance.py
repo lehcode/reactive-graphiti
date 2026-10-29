@@ -212,12 +212,7 @@ BUDGETED_CASES = {
 
 
 # Budgeted sites that still overrun: strict xfail, so a fix turns the test red until removed here
-KNOWN_OVERRUN = {
-    'dedupe_nodes.nodes': (
-        'node_budget._dedupe_batches costs each entry on its own: the ", " separators and the '
-        'per-entry rounding are not counted, so a 164-entry batch renders 6113 tokens against a budget of 6000'
-    ),
-}
+KNOWN_OVERRUN: dict[str, str] = {}
 
 
 @pytest.mark.asyncio
