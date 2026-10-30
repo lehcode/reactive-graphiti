@@ -4,11 +4,11 @@
 
 This is a **Python monorepo** with three independently versioned packages, all under Python 3.10+:
 
-| Directory | Package | Entry point |
-|-----------|---------|-------------|
+| Directory        | Package                 | Entry point                                    |
+| ---------------- | ----------------------- | ---------------------------------------------- |
 | `graphiti_core/` | `graphiti-core` library | `graphiti_core/graphiti.py` — `Graphiti` class |
-| `server/` | REST API | `server/graph_service/main.py` — FastAPI app |
-| `mcp_server/` | MCP server | `mcp_server/main.py` |
+| `server/`        | REST API                | `server/graph_service/main.py` — FastAPI app   |
+| `mcp_server/`    | MCP server              | `mcp_server/main.py`                           |
 
 Each subpackage has its own `pyproject.toml`, `Makefile`, and test suite. The root `conftest.py` imports fixtures from `tests/helpers_test.py` and excludes `mcp_server/*` from collection.
 
@@ -38,13 +38,13 @@ Run a single test: `uv run pytest tests/test_file.py::test_method_name -v`
 ## Testing gotchas
 
 - **`make test` does NOT set `DISABLE_NEO4J`** — the `graph_driver` fixture in `helpers_test.py` will try to connect to `bolt://localhost:7687`. If no Neo4j is running, those tests hang on connection retry. Run with `NEO4J_PASSWORD=test make test` or disable explicitly:
-
+  
   ```bash
   DISABLE_NEO4J=1 make test
   ```
 
 - The fully-green no-DB unit gate (CI command):
-
+  
   ```bash
   DISABLE_NEO4J=1 DISABLE_FALKORDB=1 DISABLE_KUZU=1 DISABLE_NEPTUNE=1 uv run pytest tests/ \
     --ignore=tests/test_graphiti_int.py \
@@ -57,12 +57,15 @@ Run a single test: `uv run pytest tests/test_file.py::test_method_name -v`
   ```
 
 - **`tests/test_add_triplet.py`** has pre-existing failures (mock embedder doesn't stub `create_batch` → `zip(strict=True)` raises). CI never runs this file — ignore it.
+
 - Integration tests are marked with `@pytest.mark.integration` and use `asyncio_mode = auto`.
+
 - `server/` and `mcp_server/` e2e tests self-skip (exit 5) when `OPENAI_API_KEY` is unset — expected.
 
 ## DB drivers
 
 `helpers_test.py` selects active drivers from these env vars:
+
 - `DISABLE_NEO4J`, `DISABLE_FALKORDB`, `ENABLE_KUZU`/`DISABLE_KUZU`, `DISABLE_NEPTUNE`
 
 Kuzu is deprecated (upstream unmaintained); excluded by default. Enable with `ENABLE_KUZU=1`.
