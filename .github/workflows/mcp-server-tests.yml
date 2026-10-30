@@ -1,18 +1,18 @@
 name: MCP Server Tests
 
 # Live end-to-end tests for the Graphiti MCP server against FalkorDB (the default
-# database) and a real OpenAI model. Runs on PRs and pushes to main that touch the
+# database) and a real OpenAI model. Runs on PRs and pushes to master that touch the
 # MCP server. The OpenAI key comes from the `development` GitHub environment; fork
 # PRs receive no secrets, so the suite skips itself there (the test module skips
 # when OPENAI_API_KEY is unset).
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
   pull_request:
-    branches: [main]
+    branches: [master]
     paths:
       - "mcp_server/**"
       - ".github/workflows/mcp-server-tests.yml"
